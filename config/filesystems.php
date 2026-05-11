@@ -47,6 +47,17 @@ return [
             'report' => false,
         ],
 
+        // Uploads disk: writes directly to public/uploads/ so files are served
+        // without needing a symlink. Accessible at /uploads/... URL.
+        // On cPanel: the public/ directory IS the document root, so this works.
+        'uploads' => [
+            'driver'     => 'local',
+            'root'       => public_path('uploads'),
+            'url'        => rtrim(env('APP_URL', 'http://localhost'), '/').'/uploads',
+            'visibility' => 'public',
+            'throw'      => false,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),

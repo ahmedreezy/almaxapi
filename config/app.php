@@ -67,6 +67,8 @@ return [
 
     'timezone' => 'UTC',
 
+    'webhook_secret' => env('WEBHOOK_SECRET', ''),
+
     /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration
@@ -124,3 +126,4 @@ return [
     ],
 
 ];
+
