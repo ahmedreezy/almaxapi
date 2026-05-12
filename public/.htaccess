@@ -5,6 +5,11 @@
 
     RewriteEngine On
 
+    # Canonical host + HTTPS for production domain.
+    RewriteCond %{HTTP_HOST} ^www\.almaxpredictions\.com$ [NC,OR]
+    RewriteCond %{HTTPS} !=on
+    RewriteRule ^ https://almaxpredictions.com%{REQUEST_URI} [L,R=301]
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
