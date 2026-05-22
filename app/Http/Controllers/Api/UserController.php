@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -44,20 +46,41 @@ class UserController extends Controller
             ]);
         }
 
-        $user = User::create([
-            'username'      => $data['username'],
-            'phone'         => $data['phone'],
-            'password_hash' => Hash::make($data['password']),
-        ]);
+        try {
+            $result = DB::transaction(function () use ($data) {
+                $user = User::create([
+                    'username'      => $data['username'],
+                    'phone'         => $data['phone'],
+                    'password_hash' => Hash::make($data['password']),
+                ]);
 
-        $token = $user->createToken('user-token', ['role:user']);
+                $token = $user->createToken('user-token', ['role:user']);
+
+                return [
+                    'user'  => $user,
+                    'token' => $token->plainTextToken,
+                ];
+            });
+        } catch (QueryException $e) {
+            if ($this->isTokenStorageFailure($e)) {
+                return response()->json([
+                    'error' => 'Token service unavailable',
+                    'message' => 'Token storage is not ready. Contact support.',
+                ], 503);
+            }
+
+            throw $e;
+        }
+
+        /** @var User $user */
+        $user = $result['user'];
 
         return response()->json([
             'id'        => $user->id,
             'username'  => $user->username,
             'phone'     => $user->phone,
             'createdAt' => $user->created_at?->getTimestampMs(),
-            'token'     => $token->plainTextToken,
+            'token'     => $result['token'],
         ], 201);
     }
 
@@ -83,9 +106,20 @@ class UserController extends Controller
             ]);
         }
 
-        // Rotate token on every login for security
-        $user->tokens()->where('name', 'user-token')->delete();
-        $token = $user->createToken('user-token', ['role:user']);
+        try {
+            // Rotate token on every login for security
+            $user->tokens()->where('name', 'user-token')->delete();
+            $token = $user->createToken('user-token', ['role:user']);
+        } catch (QueryException $e) {
+            if ($this->isTokenStorageFailure($e)) {
+                return response()->json([
+                    'error' => 'Token service unavailable',
+                    'message' => 'Token storage is not ready. Contact support.',
+                ], 503);
+            }
+
+            throw $e;
+        }
 
         return response()->json([
             'id'        => $user->id,
@@ -119,5 +153,15 @@ class UserController extends Controller
         $user->delete();
 
         return response()->json(['message' => 'User deleted.']);
+    }
+
+    private function isTokenStorageFailure(QueryException $e): bool
+    {
+        $sqlState = (string) ($e->errorInfo[0] ?? '');
+        $message = strtolower($e->getMessage());
+
+        // PostgreSQL: 42P01 = undefined_table, 42703 = undefined_column
+        return in_array($sqlState, ['42P01', '42703'], true)
+            && str_contains($message, 'personal_access_tokens');
     }
 }

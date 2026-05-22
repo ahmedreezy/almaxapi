@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AdminUser;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -44,10 +45,20 @@ class AuthController extends Controller
             ]);
         }
 
-        // Delete any existing admin tokens to enforce single-session semantics
-        $admin->tokens()->where('name', 'admin-token')->delete();
+        try {
+            // Delete any existing admin tokens to enforce single-session semantics
+            $admin->tokens()->where('name', 'admin-token')->delete();
+            $token = $admin->createToken('admin-token', ['role:admin']);
+        } catch (QueryException $e) {
+            if ($this->isTokenStorageFailure($e)) {
+                return response()->json([
+                    'error' => 'Token service unavailable',
+                    'message' => 'Token storage is not ready. Run Sanctum migrations.',
+                ], 503);
+            }
 
-        $token = $admin->createToken('admin-token', ['role:admin']);
+            throw $e;
+        }
 
         return response()->json([
             'token' => $token->plainTextToken,
@@ -83,5 +94,15 @@ class AuthController extends Controller
         $admin->tokens()->delete();
 
         return response()->json(['message' => 'Password updated successfully.']);
+    }
+
+    private function isTokenStorageFailure(QueryException $e): bool
+    {
+        $sqlState = (string) ($e->errorInfo[0] ?? '');
+        $message = strtolower($e->getMessage());
+
+        // PostgreSQL: 42P01 = undefined_table, 42703 = undefined_column
+        return in_array($sqlState, ['42P01', '42703'], true)
+            && str_contains($message, 'personal_access_tokens');
     }
 }
