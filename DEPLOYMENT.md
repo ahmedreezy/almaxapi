@@ -118,6 +118,20 @@ What it creates if missing:
 
 > **Safe to run against the live `newbet` database.** Existing rows are untouched.
 
+### Admin Credential Recovery (One Command)
+
+If admin login fails or you need to rotate credentials quickly:
+
+```bash
+php artisan admin:rotate-password --username=admin --password="YourStrongPassword" --deactivate-others
+```
+
+This command will:
+- create/update the specified admin account,
+- hash and store the new password,
+- revoke that admin's active API tokens,
+- optionally remove other admin accounts when `--deactivate-others` is provided.
+
 ---
 
 ## 6. Create Uploads Directory
