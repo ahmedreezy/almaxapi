@@ -66,6 +66,11 @@ class Subscription extends Model
      */
     public function durationSeconds(): int
     {
-        return $this->plan_type === 'weekly' ? 7 * 24 * 3600 : 24 * 3600;
+        return match ($this->plan_type) {
+            'monthly' => 30 * 24 * 3600,
+            'weekly'  => 7 * 24 * 3600,
+            'special' => 7 * 24 * 3600,
+            default   => 24 * 3600,
+        };
     }
 }

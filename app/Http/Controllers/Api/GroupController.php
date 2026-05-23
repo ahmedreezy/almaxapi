@@ -8,31 +8,151 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
- * GET  /api/groups        — public: list all groups with name, odds, plan, price
- * PATCH /api/groups/:id   — admin: update betslip_link, betslip_code, price, name
+ * GET    /api/groups          — public:  active groups only (special hidden until priced)
+ * GET    /api/groups/admin    — admin:   all groups including hidden ones
+ * POST   /api/groups          — admin:   create a new package
+ * PATCH  /api/groups/:id      — admin:   update price, betslip, special fields
+ * DELETE /api/groups/:id      — admin:   remove a package
  */
 class GroupController extends Controller
 {
-    /** Public: return all groups */
+    /**
+     * Public: return only groups that end-users can purchase.
+     * Regular groups: is_active must be true.
+     * Special groups: is_active must be true AND special_price must be set.
+     */
     public function index(): JsonResponse
     {
-        $groups = Group::orderBy('price')->get();
+        $groups = Group::orderBy('price')
+            ->get()
+            ->filter(fn (Group $g) => $g->isPubliclyVisible())
+            ->map(fn (Group $g) => $this->formatGroup($g))
+            ->values();
+
         return response()->json($groups);
     }
 
-    /** Admin: update a group's betslip link/code, price, or name */
+    /**
+     * Admin: return ALL groups, including inactive and unpriced special ones.
+     */
+    public function indexAdmin(): JsonResponse
+    {
+        $groups = Group::orderBy('price')
+            ->get()
+            ->map(fn (Group $g) => $this->formatGroup($g));
+
+        return response()->json($groups);
+    }
+
+    /**
+     * Admin: create a new VIP package.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'name'                  => ['required', 'string', 'max:100', 'unique:groups,name'],
+            'odds_type'             => ['required', 'string', 'max:20'],
+            'plan_type'             => ['required', 'string', 'in:daily,weekly,monthly,special'],
+            'price'                 => ['required', 'numeric', 'min:0'],
+            'betslip_link'          => ['sometimes', 'nullable', 'string', 'max:500'],
+            'betslip_code'          => ['sometimes', 'nullable', 'string', 'max:100'],
+            'is_special'            => ['sometimes', 'boolean'],
+            'is_active'             => ['sometimes', 'boolean'],
+            'special_price'         => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            'special_odds'          => ['sometimes', 'nullable', 'string', 'max:50'],
+            'subscription_deadline' => ['sometimes', 'nullable', 'date_format:H:i'],
+        ]);
+
+        $group = Group::create(array_merge([
+            'betslip_link' => '',
+            'betslip_code' => '',
+            'is_special'   => false,
+            'is_active'    => true,
+        ], $data));
+
+        return response()->json($this->formatGroup($group), 201);
+    }
+
+    /**
+     * Admin: update a group's fields.
+     * Supports toggling special odds: set is_active + special_price + special_odds.
+     * Clearing special_price (null) hides the special group from users.
+     */
     public function update(Request $request, int $id): JsonResponse
     {
         $data = $request->validate([
-            'name'          => ['sometimes', 'string', 'max:100'],
-            'price'         => ['sometimes', 'numeric', 'min:0'],
-            'betslip_link'  => ['sometimes', 'nullable', 'string', 'max:500'],
-            'betslip_code'  => ['sometimes', 'nullable', 'string', 'max:100'],
+            'name'                  => ['sometimes', 'string', 'max:100'],
+            'price'                 => ['sometimes', 'numeric', 'min:0'],
+            'betslip_link'          => ['sometimes', 'nullable', 'string', 'max:500'],
+            'betslip_code'          => ['sometimes', 'nullable', 'string', 'max:100'],
+            'is_special'            => ['sometimes', 'boolean'],
+            'is_active'             => ['sometimes', 'boolean'],
+            'special_price'         => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            'special_odds'          => ['sometimes', 'nullable', 'string', 'max:50'],
+            'subscription_deadline' => ['sometimes', 'nullable', 'date_format:H:i'],
         ]);
 
         $group = Group::findOrFail($id);
-        $group->update(array_filter($data, fn ($v) => $v !== null));
 
-        return response()->json($group->fresh());
+        // Allow explicit null for special_price and special_odds (to reset)
+        $group->fill($data);
+        // ConvertEmptyStringsToNull middleware can turn '' into null for NOT NULL columns — guard against it
+        $group->betslip_link = $group->betslip_link ?? '';
+        $group->betslip_code = $group->betslip_code ?? '';
+        if ($request->has('special_price')) {
+            $group->special_price = $request->input('special_price');
+        }
+        if ($request->has('special_odds')) {
+            $group->special_odds = $request->input('special_odds');
+        }
+        if ($request->has('subscription_deadline')) {
+            $group->subscription_deadline = $request->input('subscription_deadline') ?: null;
+        }
+        $group->save();
+
+        return response()->json($this->formatGroup($group->fresh()));
+    }
+
+    /**
+     * Admin: permanently delete a package.
+     * Returns 409 if subscriptions reference this group.
+     */
+    public function destroy(int $id): JsonResponse
+    {
+        $group = Group::findOrFail($id);
+
+        if ($group->subscriptions()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete a group that has subscriptions. Deactivate it instead.',
+            ], 409);
+        }
+
+        $group->delete();
+
+        return response()->json(['message' => 'Group deleted.'], 200);
+    }
+
+    // ─── Private helpers ──────────────────────────────────────────────────
+
+    private function formatGroup(Group $group): array
+    {
+        return [
+            'id'                   => $group->id,
+            'name'                 => $group->name,
+            'oddsType'             => $group->odds_type,
+            'planType'             => $group->plan_type,
+            'price'                => $group->price,
+            'betslipLink'          => $group->betslip_link ?? '',
+            'betslipCode'          => $group->betslip_code ?? '',
+            'isSpecial'            => (bool) $group->is_special,
+            'isActive'             => (bool) $group->is_active,
+            'specialPrice'         => $group->special_price,
+            'specialOdds'          => $group->special_odds,
+            'effectivePrice'       => $group->effectivePrice(),
+            'subscriptionDeadline' => $group->subscription_deadline
+                ? substr($group->subscription_deadline, 0, 5)   // trim to "HH:MM"
+                : null,
+            'isClosed'             => $group->isPastDeadline(),
+        ];
     }
 }

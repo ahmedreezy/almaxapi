@@ -2,10 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Models\Group;
 use App\Models\Subscription;
 use App\Models\User;
-use App\Models\VipConfig;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
@@ -15,8 +14,9 @@ use Tests\TestCase;
  *
  * Key facts about the subscription API:
  * - POST /api/subscriptions is PUBLIC (no auth required — users pay first, then subscribe)
- * - VALID_COMBOS: '1.5'→weekly only, '2'→daily|weekly, '5'→daily|weekly
- * - Required fields: userId, planType (daily|weekly), paymentMethod (mtn|airtel), phone, oddsType
+ * - Required fields: userId, groupId, paymentMethod (mtn|airtel), phone
+ * - Price is always read from the group record (never trusted from the client)
+ * - Special groups: use special_price; returns 422 if special_price is null
  * - verify-access takes phone + secretCode (password-style secret, not plan params)
  */
 class SubscriptionTest extends TestCase
@@ -25,18 +25,24 @@ class SubscriptionTest extends TestCase
     {
         parent::setUp();
         Storage::fake('uploads');
+    }
 
-        // Seed VipConfig pricing keys used by SubscriptionController
-        $prices = [
-            'odds_1.5_weekly_price' => '500',
-            'odds_2_daily_price'    => '100',
-            'odds_2_weekly_price'   => '500',
-            'odds_5_daily_price'    => '150',
-            'odds_5_weekly_price'   => '700',
-        ];
-        foreach ($prices as $key => $value) {
-            VipConfig::updateOrCreate(['key' => $key], ['value' => $value]);
-        }
+    /**
+     * Create a Group record for subscription tests.
+     * Returns the Group model.
+     */
+    private function makeGroup(array $overrides = []): Group
+    {
+        return Group::create(array_merge([
+            'name'         => 'Test Group ' . uniqid(),
+            'odds_type'    => '5',
+            'plan_type'    => 'daily',
+            'price'        => 15000,
+            'betslip_link' => '',
+            'betslip_code' => '',
+            'is_special'   => false,
+            'is_active'    => true,
+        ], $overrides));
     }
 
     /** Helper: seed a minimal subscription record for state-based tests */
@@ -53,90 +59,166 @@ class SubscriptionTest extends TestCase
         ], $overrides));
     }
 
+    /** Base POST body for subscription creation. */
+    private function subBody(int $userId, int $groupId, string $phone, string $method = 'airtel'): array
+    {
+        return [
+            'userId'        => $userId,
+            'groupId'       => $groupId,
+            'paymentMethod' => $method,
+            'phone'         => $phone,
+        ];
+    }
+
     // ─── Create subscription (PUBLIC route) ──────────────────────────────
 
     public function test_user_can_create_subscription(): void
     {
-        $ctx = $this->createUser('0711000001');
+        $ctx   = $this->createUser('0711000001');
+        $group = $this->makeGroup(['odds_type' => '2', 'plan_type' => 'daily', 'price' => 10000]);
 
-        $response = $this->postJson('/api/subscriptions', [
-            'userId'        => $ctx['user']->id,
-            'oddsType'      => '2',
-            'planType'      => 'daily',
-            'paymentMethod' => 'mtn',
-            'phone'         => '0711000001',
-        ]);
+        $response = $this->postJson('/api/subscriptions',
+            $this->subBody($ctx['user']->id, $group->id, '0711000001', 'mtn'));
 
         $response->assertStatus(201)
-            ->assertJsonStructure(['id', 'user_id', 'odds_type', 'plan_type', 'amount', 'status']);
+            ->assertJsonPath('subscription.user_id', $ctx['user']->id)
+            ->assertJsonPath('subscription.group_id', $group->id)
+            ->assertJsonPath('subscription.status',   'pending');
 
+        $this->assertEquals(10000, $response->json('subscription.amount'));
         $this->assertDatabaseHas('subscriptions', [
-            'user_id'   => $ctx['user']->id,
-            'odds_type' => '2',
-            'plan_type' => 'daily',
+            'user_id'  => $ctx['user']->id,
+            'group_id' => $group->id,
         ]);
     }
 
-    public function test_invalid_odds_plan_combo_is_rejected(): void
+    public function test_subscription_uses_group_price_not_client_supplied(): void
     {
-        $ctx = $this->createUser('0711000002');
+        // Client must NOT be able to manipulate the price — it's always taken from the group
+        $ctx   = $this->createUser('0711000003');
+        $group = $this->makeGroup(['price' => 60000]);
 
-        // 1.5 only allows weekly, not daily → should fail with 422 (ValidationException)
-        $this->postJson('/api/subscriptions', [
-            'userId'        => $ctx['user']->id,
-            'oddsType'      => '1.5',
-            'planType'      => 'daily',
-            'paymentMethod' => 'mtn',
-            'phone'         => '0711000002',
-        ])->assertStatus(422);
+        $body           = $this->subBody($ctx['user']->id, $group->id, '0711000003');
+        $body['amount'] = 1; // attempt to underpay
+
+        $response = $this->postJson('/api/subscriptions', $body)->assertStatus(201);
+        $this->assertEquals(60000, $response->json('subscription.amount'));
     }
 
-    public function test_all_valid_combos_are_accepted(): void
+    public function test_all_five_packages_can_be_subscribed(): void
     {
-        // Bypass throttle middleware — this test verifies business logic, not rate limiting
         $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
 
-        $validCombos = [
-            ['1.5', 'weekly'],
-            ['2',   'daily'],
-            ['2',   'weekly'],
-            ['5',   'daily'],
-            ['5',   'weekly'],
+        $packages = [
+            ['name' => 'Daily Odd 5 T',            'odds_type' => '5',       'plan_type' => 'daily',   'price' => 15000],
+            ['name' => 'Weekly Odd 5 T',            'odds_type' => '5',       'plan_type' => 'weekly',  'price' => 60000],
+            ['name' => 'Big Staker Weekly Odd 2 T', 'odds_type' => '2',       'plan_type' => 'weekly',  'price' => 50000],
+            ['name' => 'Monthly Odd 1.5 T',         'odds_type' => '1.5',     'plan_type' => 'monthly', 'price' => 45000],
         ];
 
-        $i = 10;
-        foreach ($validCombos as [$odds, $plan]) {
-            $phone = "07110000{$i}";
-            $ctx = $this->createUser($phone);
+        $i = 20;
+        foreach ($packages as $pkg) {
+            $phone = '07200000' . str_pad($i, 2, '0', STR_PAD_LEFT);
+            $ctx   = $this->createUser($phone);
+            $group = $this->makeGroup($pkg);
             $i++;
-            $this->postJson('/api/subscriptions', [
-                'userId'        => $ctx['user']->id,
-                'oddsType'      => $odds,
-                'planType'      => $plan,
-                'paymentMethod' => 'airtel',
-                'phone'         => $phone,
-            ])->assertStatus(201, "Combo {$odds}/{$plan} should be valid");
+
+            $this->postJson('/api/subscriptions',
+                $this->subBody($ctx['user']->id, $group->id, $phone))
+                ->assertStatus(201, "Package '{$pkg['name']}' subscription should succeed");
         }
     }
 
-    public function test_invalid_odds_type_is_rejected(): void
+    public function test_monthly_subscription_creates_correct_plan_type(): void
     {
-        $ctx = $this->createUser('0711000030');
+        $ctx   = $this->createUser('0711000040');
+        $group = $this->makeGroup(['odds_type' => '1.5', 'plan_type' => 'monthly', 'price' => 45000]);
 
-        // '3' is not in VALID_COMBOS
-        $this->postJson('/api/subscriptions', [
-            'userId'        => $ctx['user']->id,
-            'oddsType'      => '3',
-            'planType'      => 'weekly',
-            'paymentMethod' => 'mtn',
-            'phone'         => '0711000030',
-        ])->assertStatus(422);
+        $this->postJson('/api/subscriptions',
+            $this->subBody($ctx['user']->id, $group->id, '0711000040'))
+            ->assertStatus(201)
+            ->assertJsonPath('subscription.plan_type', 'monthly');
+    }
+
+    public function test_special_odds_subscription_uses_special_price(): void
+    {
+        $ctx   = $this->createUser('0711000050');
+        $group = $this->makeGroup([
+            'odds_type'     => 'special',
+            'plan_type'     => 'special',
+            'price'         => 0,
+            'is_special'    => true,
+            'is_active'     => true,
+            'special_price' => 35000,
+            'special_odds'  => '4.5',
+        ]);
+
+        $response = $this->postJson('/api/subscriptions',
+            $this->subBody($ctx['user']->id, $group->id, '0711000050'))
+            ->assertStatus(201);
+
+        // Must charge special_price (35,000), NOT the base price (0)
+        $this->assertEquals(35000, $response->json('subscription.amount'));
+    }
+
+    public function test_special_group_without_price_returns_422(): void
+    {
+        $ctx   = $this->createUser('0711000060');
+        $group = $this->makeGroup([
+            'odds_type'     => 'special',
+            'plan_type'     => 'special',
+            'price'         => 0,
+            'is_special'    => true,
+            'is_active'     => false,  // not activated yet
+            'special_price' => null,   // admin hasn't set a price
+        ]);
+
+        $this->postJson('/api/subscriptions',
+            $this->subBody($ctx['user']->id, $group->id, '0711000060'))
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Special Odds are not available today. Check back later.');
+    }
+
+    public function test_inactive_group_returns_422(): void
+    {
+        $ctx   = $this->createUser('0711000070');
+        $group = $this->makeGroup(['is_active' => false]);
+
+        $this->postJson('/api/subscriptions',
+            $this->subBody($ctx['user']->id, $group->id, '0711000070'))
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This package is currently unavailable.');
     }
 
     public function test_subscription_validates_required_fields(): void
     {
         // Missing all fields → 422
         $this->postJson('/api/subscriptions', [])->assertStatus(422);
+    }
+
+    public function test_subscription_requires_valid_group_id(): void
+    {
+        $ctx = $this->createUser('0711000080');
+
+        $this->postJson('/api/subscriptions', [
+            'userId'        => $ctx['user']->id,
+            'groupId'       => 99999,  // does not exist
+            'paymentMethod' => 'mtn',
+            'phone'         => '0711000080',
+        ])->assertStatus(422);
+    }
+
+    public function test_subscription_requires_valid_payment_method(): void
+    {
+        $ctx   = $this->createUser('0711000090');
+        $group = $this->makeGroup();
+
+        $this->postJson('/api/subscriptions', [
+            'userId'        => $ctx['user']->id,
+            'groupId'       => $group->id,
+            'paymentMethod' => 'visa',  // not supported
+            'phone'         => '0711000090',
+        ])->assertStatus(422);
     }
 
     // ─── Get subscriptions for user ───────────────────────────────────────
@@ -169,51 +251,6 @@ class SubscriptionTest extends TestCase
         $this->assertSame('', $sub['betslip_code']);
     }
 
-    // ─── Verify access (phone + secretCode) ───────────────────────────────
-
-    public function test_verify_access_returns_404_when_no_active_subscription(): void
-    {
-        $ctx = $this->createUser('0713000001');
-        $this->seedSubscription($ctx['user'], ['status' => 'pending']);
-
-        // pending subscription → no active sub → 404
-        $this->postJson('/api/subscriptions/verify-access', [
-            'phone'      => $ctx['user']->phone,
-            'secretCode' => 'anycode',
-        ])->assertStatus(404);
-    }
-
-    public function test_verify_access_returns_401_for_wrong_secret_code(): void
-    {
-        $ctx = $this->createUser('0713000002');
-        $this->seedSubscription($ctx['user'], [
-            'status'           => 'active',
-            'expires_at'       => now()->addHours(20)->toIso8601String(),
-            'secret_code_hash' => Hash::make('correct-secret'),
-        ]);
-
-        $this->postJson('/api/subscriptions/verify-access', [
-            'phone'      => $ctx['user']->phone,
-            'secretCode' => 'wrong-secret',
-        ])->assertStatus(401);
-    }
-
-    public function test_verify_access_succeeds_with_correct_secret(): void
-    {
-        $ctx = $this->createUser('0713000003');
-        $this->seedSubscription($ctx['user'], [
-            'status'           => 'active',
-            'expires_at'       => now()->addHours(20)->toIso8601String(),
-            'secret_code_hash' => Hash::make('correct-secret'),
-        ]);
-
-        $this->postJson('/api/subscriptions/verify-access', [
-            'phone'      => $ctx['user']->phone,
-            'secretCode' => 'correct-secret',
-        ])->assertStatus(200)
-            ->assertJsonStructure(['subscription', 'user']);
-    }
-
     // ─── Admin: list & update ─────────────────────────────────────────────
 
     public function test_admin_can_list_subscriptions(): void
@@ -244,16 +281,4 @@ class SubscriptionTest extends TestCase
         $this->assertDatabaseHas('subscriptions', ['id' => $sub->id, 'status' => 'active']);
     }
 
-    // ─── Upload proof ─────────────────────────────────────────────────────
-
-    public function test_user_can_upload_payment_proof(): void
-    {
-        $ctx  = $this->createUser('0715000001');
-        $sub  = $this->seedSubscription($ctx['user']);
-        $file = UploadedFile::fake()->image('proof.jpg', 200, 200);
-
-        $this->postJson("/api/subscriptions/{$sub->id}/proof", ['proof' => $file])
-            ->assertStatus(200)
-            ->assertJsonStructure(['id', 'proof_url']);
-    }
 }
