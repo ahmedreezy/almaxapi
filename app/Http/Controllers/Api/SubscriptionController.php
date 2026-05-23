@@ -82,6 +82,46 @@ class SubscriptionController extends Controller
 
         $group = Group::findOrFail($data['groupId']);
 
+        // Guard: special groups must have an admin-set price for today
+        if ($group->is_special && $group->special_price === null) {
+            return response()->json([
+                'message' => 'Special Odds are not available today. Check back later.',
+            ], 422);
+        }
+
+        // Guard: inactive groups cannot be subscribed to
+        if (! $group->is_active) {
+            return response()->json([
+                'message' => 'This package is currently unavailable.',
+            ], 422);
+        }
+
+        // Guard: subscription deadline — block new subs after the cutoff time
+        if ($group->isPastDeadline()) {
+            $alternatives = Group::orderBy('price')
+                ->get()
+                ->filter(fn (Group $g) =>
+                    $g->isPubliclyVisible()
+                    && ! $g->isPastDeadline()
+                    && $g->id !== $group->id
+                )
+                ->map(fn (Group $g) => [
+                    'id'             => $g->id,
+                    'name'           => $g->name,
+                    'planType'       => $g->plan_type,
+                    'effectivePrice' => $g->effectivePrice(),
+                ])
+                ->values();
+
+            return response()->json([
+                'message'      => 'Subscriptions for "' . $group->name . '" have closed for today.',
+                'alternatives' => $alternatives,
+            ], 422);
+        }
+
+        // Use special_price for special groups; regular price otherwise
+        $effectiveAmount = $group->effectivePrice();
+
         // Unique reference for this payment attempt
         $reference = 'ALX-' . $group->id . '-' . $data['userId'] . '-' . time();
 
@@ -89,12 +129,12 @@ class SubscriptionController extends Controller
         $mmService = new MobileMoneyService();
         $pushResult = $mmService->initiateSTKPush(
             $data['phone'],
-            $group->price,
+            $effectiveAmount,
             $reference,
             $data['paymentMethod']
         );
 
-        return DB::transaction(function () use ($data, $group, $reference, $pushResult) {
+        return DB::transaction(function () use ($data, $group, $reference, $pushResult, $effectiveAmount) {
             $sub = Subscription::create([
                 'user_id'           => $data['userId'],
                 'group_id'          => $group->id,
@@ -102,7 +142,7 @@ class SubscriptionController extends Controller
                 'odds_type'         => $group->odds_type,
                 'payment_method'    => $data['paymentMethod'],
                 'phone'             => $data['phone'],
-                'amount'            => $group->price,
+                'amount'            => $effectiveAmount,
                 'status'            => 'pending',
                 'payment_reference' => $reference,
             ]);
@@ -110,7 +150,7 @@ class SubscriptionController extends Controller
             Payment::create([
                 'subscription_id'   => $sub->id,
                 'user_id'           => $data['userId'],
-                'amount'            => $group->price,
+                'amount'            => $effectiveAmount,
                 'plan_type'         => $group->plan_type,
                 'payment_method'    => $data['paymentMethod'],
                 'phone'             => $data['phone'],

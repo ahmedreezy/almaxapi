@@ -59,9 +59,24 @@ Route::prefix('users')->group(function () {
 
 // ─── Groups (VIP packages) ──────────────────────────────────────────────────
 Route::prefix('groups')->group(function () {
+    // Public: active packages only (special hidden until admin sets a price)
     Route::get('/', [GroupController::class, 'index'])
         ->middleware('throttle:api');
+
+    // Admin: all packages including inactive/unpriced ones
+    Route::get('/admin', [GroupController::class, 'indexAdmin'])
+        ->middleware('auth.admin');
+
+    // Admin: create a new package
+    Route::post('/', [GroupController::class, 'store'])
+        ->middleware('auth.admin');
+
+    // Admin: update price, betslip, special_price, special_odds, is_active
     Route::patch('/{id}', [GroupController::class, 'update'])
+        ->middleware('auth.admin');
+
+    // Admin: delete a package (blocked if subscriptions exist)
+    Route::delete('/{id}', [GroupController::class, 'destroy'])
         ->middleware('auth.admin');
 });
 
