@@ -80,6 +80,26 @@ class SubscriptionController extends Controller
             'phone'         => ['required', 'string', 'max:30'],
         ]);
 
+        $duplicateWindowSeconds = max((int) env('PAYMENT_DUPLICATE_WINDOW_SECONDS', 180), 30);
+        $existingPending = Subscription::with(['payment', 'group'])
+            ->where('user_id', $data['userId'])
+            ->where('group_id', $data['groupId'])
+            ->where('payment_method', $data['paymentMethod'])
+            ->where('phone', $data['phone'])
+            ->where('status', 'pending')
+            ->where('created_at', '>=', now()->subSeconds($duplicateWindowSeconds))
+            ->orderByDesc('created_at')
+            ->first();
+
+        if ($existingPending) {
+            return response()->json([
+                'message' => 'A payment request is already in progress for this package. Please approve the existing prompt or wait a moment before retrying.',
+                'existingSubscriptionId' => $existingPending->id,
+                'paymentReference' => $existingPending->payment_reference,
+                'status' => $existingPending->status,
+            ], 409);
+        }
+
         $group = Group::findOrFail($data['groupId']);
 
         // Guard: special groups must have an admin-set price for today
@@ -134,7 +154,15 @@ class SubscriptionController extends Controller
             $data['paymentMethod']
         );
 
-        return DB::transaction(function () use ($data, $group, $reference, $pushResult, $effectiveAmount) {
+        $providerTxnId = null;
+        if (is_array($pushResult['raw'] ?? null)) {
+            $providerTxnId = $pushResult['raw']['tid']
+                ?? $pushResult['raw']['transaction_id']
+                ?? $pushResult['raw']['txn_id']
+                ?? null;
+        }
+
+        return DB::transaction(function () use ($data, $group, $reference, $pushResult, $effectiveAmount, $providerTxnId) {
             $sub = Subscription::create([
                 'user_id'           => $data['userId'],
                 'group_id'          => $group->id,
@@ -156,6 +184,7 @@ class SubscriptionController extends Controller
                 'phone'             => $data['phone'],
                 'status'            => 'pending',
                 'payment_reference' => $reference,
+                'transaction_id'    => $providerTxnId,
             ]);
 
             return response()->json([

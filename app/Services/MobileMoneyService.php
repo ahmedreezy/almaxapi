@@ -209,12 +209,18 @@ class MobileMoneyService
                 ?? $data['external_reference']
                 ?? $data['external_ref']
                 ?? $data['merchant_reference']
+                ?? $data['merchant_ref']
+                ?? $data['order_reference']
+                ?? $data['memo']
                 ?? $data['tx']
                 ?? $data['ref']
                 ?? '',
             'status'         => $status,
             'transaction_id' => $data['transaction_id']
                 ?? $data['txn_id']
+                ?? $data['txnid']
+                ?? $data['trx_id']
+                ?? $data['tr_id']
                 ?? $data['provider_txn_id']
                 ?? $data['tid']
                 ?? null,
