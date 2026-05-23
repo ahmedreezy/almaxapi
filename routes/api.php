@@ -100,14 +100,12 @@ Route::prefix('subscriptions')->group(function () {
 });
 
 // ─── Payments ───────────────────────────────────────────────────────────────
-Route::post('/payments/webhook', [PaymentController::class, 'webhook'])
+Route::match(['get', 'post'], '/payments/webhook', [PaymentController::class, 'webhook'])
     ->middleware('throttle:20,1');   // No auth — HMAC-verified inside controller
 
 Route::prefix('payments')->middleware('auth.admin')->group(function () {
-    Route::get('/', [PaymentController::class, 'index']);
-    Route::get('/{id}', [PaymentController::class, 'show']);
-});
-Route::prefix('payments')->middleware('auth.admin')->group(function () {
+    Route::get('/report', [PaymentController::class, 'report']);
+    Route::post('/reconcile', [PaymentController::class, 'reconcile']);
     Route::get('/', [PaymentController::class, 'index']);
     Route::get('/{id}', [PaymentController::class, 'show']);
 });
