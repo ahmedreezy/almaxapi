@@ -36,11 +36,11 @@ return [
     ],
 
     'mobile_money' => [
-        'api_url'       => env('MOBILE_MONEY_API_URL', ''),
-        'api_key'       => env('MOBILE_MONEY_API_KEY', ''),
+        'api_url'       => env('MOBILE_MONEY_API_URL', env('JPESA_API_URL', '')),
+        'api_key'       => env('MOBILE_MONEY_API_KEY', env('JPESA_API_KEY', '')),
         'api_secret'    => env('MOBILE_MONEY_API_SECRET', ''),
         'webhook_secret'=> env('MOBILE_MONEY_WEBHOOK_SECRET', ''),
-        'callback_url'  => env('MOBILE_MONEY_CALLBACK_URL', ''),
+        'callback_url'  => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
     ],
 
 ];
