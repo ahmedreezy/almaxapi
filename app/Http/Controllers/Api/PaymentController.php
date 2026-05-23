@@ -127,15 +127,27 @@ class PaymentController extends Controller
         $status    = $parsed['status']    ?? '';
         $txnId     = $parsed['transaction_id'] ?? null;
 
-        if (empty($reference)) {
-            return response()->json(['error' => 'Missing reference'], 422);
+        $sub = null;
+
+        if (! empty($reference)) {
+            $sub = Subscription::with(['payment', 'group'])
+                ->where('payment_reference', $reference)
+                ->where('status', 'pending')
+                ->first();
         }
 
-        // Find the pending subscription by payment reference
-        $sub = Subscription::with(['payment', 'group'])
-            ->where('payment_reference', $reference)
-            ->where('status', 'pending')
-            ->first();
+        if (! $sub && ! empty($txnId)) {
+            $sub = Subscription::with(['payment', 'group'])
+                ->where('status', 'pending')
+                ->whereHas('payment', function ($q) use ($txnId) {
+                    $q->where('transaction_id', $txnId);
+                })
+                ->first();
+        }
+
+        if (! $sub && empty($reference) && empty($txnId)) {
+            return response()->json(['error' => 'Missing payment identifier'], 422);
+        }
 
         if (! $sub) {
             Log::info('Payment webhook: no pending subscription for reference', ['reference' => $reference]);
@@ -215,7 +227,7 @@ class PaymentController extends Controller
             if ($sub->payment) {
                 $sub->payment->update([
                     'status'            => 'confirmed',
-                    'transaction_id'    => $txnId,
+                    'transaction_id'    => $txnId ?: $sub->payment->transaction_id,
                     'payment_reference' => $sub->payment_reference,
                 ]);
             }
@@ -235,7 +247,7 @@ class PaymentController extends Controller
         if ($sub->payment) {
             $sub->payment->update([
                 'status'            => 'failed',
-                'transaction_id'    => $txnId,
+                'transaction_id'    => $txnId ?: $sub->payment->transaction_id,
                 'payment_reference' => $sub->payment_reference,
             ]);
         }
