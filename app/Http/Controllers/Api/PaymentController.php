@@ -107,10 +107,16 @@ class PaymentController extends Controller
     {
         $rawBody = $request->getContent();
 
-        // Jpesa calls this callback with GET parameters, especially:
+        // Jpesa calls this callback with query parameters, especially:
         //   ?tid=<provider transaction id>&status=approved|failed|closed
+        // Some provider dashboards report this as a callback even when the
+        // transport is POST, so process these query params before HMAC checks.
         // A later "closed" callback must never undo an earlier approval.
-        if ($request->isMethod('get')) {
+        $hasJpesaQuery = $request->query->has('tid')
+            || $request->query->has('status')
+            || $request->query->has('tx');
+
+        if ($hasJpesaQuery) {
             $tid    = trim((string) $request->query('tid', ''));
             $status = $this->normaliseJpesaStatus((string) $request->query('status', ''));
 
@@ -126,8 +132,16 @@ class PaymentController extends Controller
                 reference: trim((string) $request->query('tx', $request->query('reference', ''))),
                 status: $status,
                 txnId: $tid !== '' ? $tid : null,
-                source: 'jpesa-get'
+                source: 'jpesa-query'
             );
+        }
+
+        if ($request->isMethod('get')) {
+            return response()->json([
+                'ok'       => true,
+                'endpoint' => '/api/payments/webhook',
+                'message'  => 'Payment callback endpoint is reachable',
+            ]);
         }
 
         $signature = $request->header('X-Signature', $request->header('X-Webhook-Signature', ''));
