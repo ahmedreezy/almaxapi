@@ -227,6 +227,127 @@ class MobileMoneyService
         ];
     }
 
+    /**
+     * Query a transaction's status by its provider transaction ID.
+     *
+     * Used to verify a transaction ID that the user submits manually via the
+     * "Already paid?" flow, both in local dev and production.
+     * Credentials are taken from the same .env keys as the STK push:
+     *   JPESA_API_URL  → https://my.jpesa.com/api/
+     *   JPESA_API_KEY  → your key
+     *
+     * @param  string $txnId  Transaction ID from the user's Airtel Money SMS
+     * @return array{success: bool, message: string, txn_id: string, raw?: array}
+     */
+    public function queryTransaction(string $txnId): array
+    {
+        if (empty($this->apiUrl) || empty($this->apiKey)) {
+            Log::warning('MobileMoneyService: cannot query transaction — provider not configured.', [
+                'txn_id' => $txnId,
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Payment verification service is not available right now. Please contact support with your transaction ID.',
+                'txn_id'  => $txnId,
+            ];
+        }
+
+        // Sanitise — prevent injection into the XML payload
+        $safeTxnId = preg_replace('/[^A-Za-z0-9\-_.]/', '', $txnId);
+        if ($safeTxnId !== $txnId || empty($safeTxnId)) {
+            return [
+                'success' => false,
+                'message' => 'Invalid transaction ID format. Please copy it exactly from your SMS.',
+                'txn_id'  => $txnId,
+            ];
+        }
+
+        $apiUrl = $this->apiUrl;
+        if (str_contains($apiUrl, 'my.jpesa.com') && str_contains($apiUrl, '/api/collect')) {
+            $apiUrl = 'https://my.jpesa.com/api/';
+        }
+
+        $xml = $this->buildJpesaXml([
+            '_key_'  => $this->apiKey,
+            'cmd'    => 'account',
+            'action' => 'query',
+            'tid'    => $safeTxnId,
+        ]);
+
+        try {
+            $response = Http::withHeaders([
+                    'Content-Type' => 'text/xml',
+                    'Accept'       => 'application/json',
+                ])
+                ->timeout(20)
+                ->withBody($xml, 'text/xml')
+                ->post($apiUrl);
+
+            $json = json_decode((string) $response->body(), true);
+            if (! is_array($json)) {
+                $json = [];
+            }
+
+            $status = strtolower((string) (
+                $json['status']         ??
+                $json['payment_status'] ??
+                $json['result']         ??
+                $json['state']          ??
+                ''
+            ));
+
+            if (in_array($status, ['success', 'successful', 'completed', 'ok', 'approved'], true)) {
+                Log::info('MobileMoneyService: transaction verified via query.', [
+                    'txn_id' => $txnId,
+                    'status' => $status,
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => 'Transaction verified successfully.',
+                    'txn_id'  => $txnId,
+                    'raw'     => $json,
+                ];
+            }
+
+            if (in_array($status, ['failed', 'failure', 'declined', 'rejected', 'error', 'cancelled'], true)) {
+                return [
+                    'success' => false,
+                    'message' => 'This transaction was not successful. Please check your Airtel Money SMS and try again.',
+                    'txn_id'  => $txnId,
+                    'raw'     => $json,
+                ];
+            }
+
+            // Unknown/ambiguous — log and refuse to activate
+            Log::warning('MobileMoneyService: ambiguous queryTransaction response — not activating.', [
+                'txn_id' => $txnId,
+                'status' => $status,
+                'body'   => $response->body(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Could not confirm transaction status. Please contact support and quote transaction ID: ' . $txnId,
+                'txn_id'  => $txnId,
+                'raw'     => $json,
+            ];
+
+        } catch (\Throwable $e) {
+            Log::error('MobileMoneyService: queryTransaction request failed.', [
+                'txn_id' => $txnId,
+                'error'  => $e->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Could not reach payment verification service. Please try again shortly.',
+                'txn_id'  => $txnId,
+            ];
+        }
+    }
+
     private function normalizePhone(string $phone): string
     {
         $digits = preg_replace('/\D+/', '', $phone ?? '') ?? '';
