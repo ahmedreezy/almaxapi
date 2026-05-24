@@ -26,6 +26,9 @@ class SubscriptionController extends Controller
     /** Admin: list all subscriptions with auto-expiry updates */
     public function index(): JsonResponse
     {
+        // Auto-delete stale pending/failed subs whose booking deadline has passed
+        $this->cleanupDeadlineSubscriptions();
+
         Subscription::where('status', 'active')
             ->whereNotNull('expires_at')
             ->where('expires_at', '<', now())
@@ -51,14 +54,7 @@ class SubscriptionController extends Controller
                     $sub->status = 'expired';
                 }
 
-                $data = $sub->toArray();
-
-                if ($sub->status !== 'active') {
-                    $data['betslip_link'] = '';
-                    $data['betslip_code'] = '';
-                }
-
-                return $data;
+                return $this->formatSub($sub, $sub->status === 'active');
             });
 
         return response()->json($subs);
@@ -201,7 +197,7 @@ class SubscriptionController extends Controller
      */
     public function paymentStatus(int $id): JsonResponse
     {
-        $sub = Subscription::findOrFail($id);
+        $sub = Subscription::with(['group'])->findOrFail($id);
 
         // Auto-expire if needed
         if ($sub->isExpired()) {
@@ -209,13 +205,39 @@ class SubscriptionController extends Controller
             $sub->status = 'expired';
         }
 
-        $data = $sub->toArray();
-        if ($sub->status !== 'active') {
-            $data['betslip_link'] = '';
-            $data['betslip_code'] = '';
-        }
+        return response()->json([
+            'status'       => $sub->status,
+            'subscription' => $this->formatSub($sub, $sub->status === 'active'),
+        ]);
+    }
 
-        return response()->json(['status' => $sub->status, 'subscription' => $data]);
+    /** Normalise a Subscription model to a camelCase array for API responses. */
+    private function formatSub(Subscription $sub, bool $includeBetslip = true): array
+    {
+        // Always fall back to the group's current betslip when the subscription
+        // copy is empty — handles cases where the link was set after activation.
+        $group = $sub->relationLoaded('group') ? $sub->group : null;
+        $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
+        $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
+
+        return [
+            'id'               => $sub->id,
+            'status'           => $sub->status,
+            'planType'         => $sub->plan_type,
+            'planName'         => $group?->name ?? null,
+            'oddsType'         => $sub->odds_type,
+            'paymentMethod'    => $sub->payment_method,
+            'paymentReference' => $sub->payment_reference,
+            'phone'            => $sub->phone,
+            'amount'           => $sub->amount,
+            'betslipLink'      => $includeBetslip ? $betslipLink : '',
+            'betslipCode'      => $includeBetslip ? $betslipCode : '',
+            'startedAt'        => $sub->started_at,
+            'expiresAt'        => $sub->expires_at,
+            'createdAt'        => $sub->created_at,
+            'updatedAt'        => $sub->updated_at,
+            'group'            => $group,
+        ];
     }
 
     /** Admin: reject, revoke, or manually update a subscription */
@@ -275,5 +297,130 @@ class SubscriptionController extends Controller
         ]);
 
         return response()->json($sub->fresh());
+    }
+
+    /** Admin: permanently delete a subscription and its associated payment record. */
+    public function destroy(int $id): JsonResponse
+    {
+        $sub = Subscription::with(['payment'])->findOrFail($id);
+
+        if ($sub->status === 'active') {
+            return response()->json([
+                'message' => 'Cannot delete an active subscription. Revoke it first.',
+            ], 409);
+        }
+
+        DB::transaction(function () use ($sub) {
+            $sub->payment()->delete();
+            $sub->delete();
+        });
+
+        return response()->json(['message' => 'Subscription deleted.']);
+    }
+
+    /**
+     * Public (throttled): user submits their Airtel Money transaction ID when the
+     * STK push failed or the payment was not auto-confirmed by the webhook.
+     * The system queries the Jpesa API to verify the transaction is genuine
+     * and successful, then activates the subscription if confirmed.
+     *
+     * Works the same in local and production — credentials from .env are used.
+     */
+    public function submitTransaction(Request $request, int $id): JsonResponse
+    {
+        $data = $request->validate([
+            'transactionId' => ['required', 'string', 'min:4', 'max:80', 'regex:/^[A-Za-z0-9\-_.]+$/'],
+        ]);
+
+        $sub = Subscription::with(['payment', 'group'])->findOrFail($id);
+
+        if (! in_array($sub->status, ['pending', 'failed'], true)) {
+            return response()->json([
+                'error' => 'This subscription is already ' . $sub->status . '. No action needed.',
+            ], 409);
+        }
+
+        $txnId     = $data['transactionId'];
+        $mmService = new MobileMoneyService();
+        $result    = $mmService->queryTransaction($txnId);
+
+        if (! $result['success']) {
+            \Illuminate\Support\Facades\Log::warning('submitTransaction: verification failed', [
+                'subscription_id' => $sub->id,
+                'txn_id'          => $txnId,
+                'reason'          => $result['message'] ?? 'unknown',
+            ]);
+
+            return response()->json([
+                'error'    => $result['message'] ?? 'Transaction ID could not be verified. Please check and try again.',
+                'verified' => false,
+            ], 422);
+        }
+
+        // Valid — activate the subscription
+        $now         = now();
+        $expiresAt   = $now->copy()->addSeconds($sub->durationSeconds());
+        $group       = $sub->group;
+        $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
+        $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
+
+        $sub->update([
+            'status'       => 'active',
+            'started_at'   => $now,
+            'expires_at'   => $expiresAt,
+            'betslip_link' => $betslipLink,
+            'betslip_code' => $betslipCode,
+        ]);
+
+        if ($sub->payment) {
+            $sub->payment->update([
+                'status'         => 'confirmed',
+                'transaction_id' => $txnId,
+            ]);
+        }
+
+        \Illuminate\Support\Facades\Log::info('Subscription activated via user-submitted transaction ID', [
+            'subscription_id' => $sub->id,
+            'txn_id'          => $txnId,
+        ]);
+
+        return response()->json([
+            'verified'     => true,
+            'message'      => 'Payment verified! Your subscription is now active.',
+            'subscription' => $this->formatSub($sub->fresh()->load(['group']), true),
+        ]);
+    }
+
+    /**
+     * Auto-delete pending/failed subscriptions for groups whose booking deadline
+     * has passed today, EXCEPT those submitted within 2 hours before the deadline.
+     * Those near-deadline subs are retained for admin review (they likely paid).
+     */
+    private function cleanupDeadlineSubscriptions(): void
+    {
+        $groups = Group::whereNotNull('subscription_deadline')->get();
+
+        foreach ($groups as $group) {
+            $deadlineToday = now()->startOfDay()->setTimeFromTimeString($group->subscription_deadline);
+
+            // Skip groups whose deadline hasn't passed yet today
+            if (now()->lt($deadlineToday)) {
+                continue;
+            }
+
+            // Subs created within 2 hours before deadline are kept for admin review
+            $cutoff = $deadlineToday->copy()->subHours(2);
+
+            Subscription::with(['payment'])
+                ->where('group_id', $group->id)
+                ->whereIn('status', ['pending', 'failed'])
+                ->where('created_at', '<', $cutoff)
+                ->each(function (Subscription $sub) {
+                    DB::transaction(function () use ($sub) {
+                        $sub->payment()->delete();
+                        $sub->delete();
+                    });
+                });
+        }
     }
 }

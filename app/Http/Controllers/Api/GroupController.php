@@ -110,24 +110,51 @@ class GroupController extends Controller
         }
         $group->save();
 
+        // Immediately push updated betslip link/code to all active subscribers so
+        // weekly/monthly users see the daily pick refresh without a manual status check.
+        if ($group->wasChanged('betslip_link') || $group->wasChanged('betslip_code')) {
+            \App\Models\Subscription::where('group_id', $group->id)
+                ->where('status', 'active')
+                ->update([
+                    'betslip_link' => $group->betslip_link,
+                    'betslip_code' => $group->betslip_code,
+                ]);
+
+            if (in_array($group->plan_type, ['weekly', 'monthly'], true)) {
+                \Illuminate\Support\Facades\Log::info('Betslip refreshed for long-term subscribers', [
+                    'group_id'  => $group->id,
+                    'plan_type' => $group->plan_type,
+                    'name'      => $group->name,
+                ]);
+            }
+        }
+
         return response()->json($this->formatGroup($group->fresh()));
     }
 
     /**
      * Admin: permanently delete a package.
-     * Returns 409 if subscriptions reference this group.
+     * Blocked only if there are ACTIVE or PENDING subscriptions (data still in-use).
+     * Expired/rejected subscriptions are cascade-deleted with the group.
      */
     public function destroy(int $id): JsonResponse
     {
         $group = Group::findOrFail($id);
 
-        if ($group->subscriptions()->exists()) {
+        if ($group->subscriptions()->whereIn('status', ['active', 'pending'])->exists()) {
             return response()->json([
-                'message' => 'Cannot delete a group that has subscriptions. Deactivate it instead.',
+                'message' => 'Cannot delete a group with active or pending subscriptions. Deactivate it instead.',
             ], 409);
         }
 
-        $group->delete();
+        // Cascade-delete historical expired/rejected subscriptions and their payments
+        \Illuminate\Support\Facades\DB::transaction(function () use ($group) {
+            $group->subscriptions()->each(function ($sub) {
+                $sub->payment()->delete();
+                $sub->delete();
+            });
+            $group->delete();
+        });
 
         return response()->json(['message' => 'Group deleted.'], 200);
     }

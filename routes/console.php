@@ -1,9 +1,11 @@
 <?php
 
+use App\Console\Commands\CleanupDeadlineSubscriptions;
 use App\Models\AdminUser;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -49,3 +51,10 @@ Artisan::command('admin:rotate-password {--username=admin : Admin username} {--p
 
     return self::SUCCESS;
 })->purpose('Create or rotate admin credentials for recovery');
+
+// ── Scheduler ────────────────────────────────────────────────────────────────
+// Run hourly: delete stale pending/failed subscriptions whose booking deadline
+// has passed (submissions within 2 h of deadline are kept for admin review).
+// Ensure crontab on production server contains:
+//   * * * * * cd /path/to/almaxapi && php artisan schedule:run >> /dev/null 2>&1
+Schedule::command(CleanupDeadlineSubscriptions::class)->hourly();

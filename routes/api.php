@@ -97,6 +97,12 @@ Route::prefix('subscriptions')->group(function () {
         ->middleware('auth.admin');
     Route::post('/{id}/renew', [SubscriptionController::class, 'renew'])
         ->middleware('auth.admin');
+    Route::delete('/{id}', [SubscriptionController::class, 'destroy'])
+        ->middleware('auth.admin');
+
+    // Public: user submits their own transaction ID when STK push didn't auto-confirm
+    Route::post('/{id}/submit-transaction', [SubscriptionController::class, 'submitTransaction'])
+        ->middleware('throttle:api');
 });
 
 // ─── Payments ───────────────────────────────────────────────────────────────

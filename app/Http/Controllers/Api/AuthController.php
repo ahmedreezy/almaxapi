@@ -46,8 +46,6 @@ class AuthController extends Controller
         }
 
         try {
-            // Delete any existing admin tokens to enforce single-session semantics
-            $admin->tokens()->where('name', 'admin-token')->delete();
             $token = $admin->createToken('admin-token', ['role:admin']);
         } catch (QueryException $e) {
             if ($this->isTokenStorageFailure($e)) {
