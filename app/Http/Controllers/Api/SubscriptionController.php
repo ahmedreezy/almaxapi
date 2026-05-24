@@ -202,7 +202,32 @@ class SubscriptionController extends Controller
      */
     public function paymentStatus(int $id): JsonResponse
     {
-        $sub = Subscription::with(['group'])->findOrFail($id);
+        $sub = Subscription::with(['payment', 'group'])->findOrFail($id);
+
+        if ($sub->status === 'pending') {
+            $this->tryActivateFromProviderQuery($sub);
+            $sub = $sub->fresh(['payment', 'group']);
+
+            if ($sub->status === 'pending') {
+                $activeSibling = Subscription::with(['payment', 'group'])
+                    ->where('user_id', $sub->user_id)
+                    ->where('group_id', $sub->group_id)
+                    ->where('phone', $sub->phone)
+                    ->where('status', 'active')
+                    ->where(function ($q) {
+                        $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
+                    })
+                    ->orderByDesc('started_at')
+                    ->first();
+
+                if ($activeSibling) {
+                    return response()->json([
+                        'status'       => 'active',
+                        'subscription' => $this->formatSub($activeSibling, true),
+                    ]);
+                }
+            }
+        }
 
         // Auto-expire if needed
         if ($sub->isExpired()) {
@@ -213,6 +238,48 @@ class SubscriptionController extends Controller
         return response()->json([
             'status'       => $sub->status,
             'subscription' => $this->formatSub($sub, $sub->status === 'active'),
+        ]);
+    }
+
+    private function tryActivateFromProviderQuery(Subscription $sub): void
+    {
+        $txnId = $sub->payment?->transaction_id;
+
+        if (! $txnId || $txnId === $sub->payment_reference) {
+            return;
+        }
+
+        $result = (new MobileMoneyService())->queryTransaction($txnId);
+        if (! ($result['success'] ?? false)) {
+            return;
+        }
+
+        $now         = now();
+        $expiresAt   = $now->copy()->addSeconds($sub->durationSeconds());
+        $group       = $sub->group;
+        $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
+        $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
+
+        DB::transaction(function () use ($sub, $now, $expiresAt, $betslipLink, $betslipCode, $txnId) {
+            $sub->update([
+                'status'       => 'active',
+                'started_at'   => $now,
+                'expires_at'   => $expiresAt,
+                'betslip_link' => $betslipLink,
+                'betslip_code' => $betslipCode,
+            ]);
+
+            if ($sub->payment) {
+                $sub->payment->update([
+                    'status'         => 'confirmed',
+                    'transaction_id' => $txnId,
+                ]);
+            }
+        });
+
+        \Illuminate\Support\Facades\Log::info('Subscription activated during payment-status polling', [
+            'subscription_id' => $sub->id,
+            'txn_id'          => $txnId,
         ]);
     }
 

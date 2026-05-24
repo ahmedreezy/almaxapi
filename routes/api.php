@@ -106,8 +106,8 @@ Route::prefix('subscriptions')->group(function () {
 });
 
 // ─── Payments ───────────────────────────────────────────────────────────────
-Route::match(['get', 'post'], '/payments/webhook', [PaymentController::class, 'webhook'])
-    ->middleware('throttle:20,1');   // No auth — HMAC-verified inside controller
+// No auth and no throttle: payment providers must be able to deliver callbacks reliably.
+Route::match(['get', 'post'], '/payments/webhook', [PaymentController::class, 'webhook']);
 
 Route::prefix('payments')->middleware('auth.admin')->group(function () {
     Route::get('/report', [PaymentController::class, 'report']);
