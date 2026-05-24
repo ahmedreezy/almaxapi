@@ -138,27 +138,11 @@ class SubscriptionController extends Controller
         // Use special_price for special groups; regular price otherwise
         $effectiveAmount = $group->effectivePrice();
 
-        // Unique reference for this payment attempt
+        // Unique reference for this payment attempt. Jpesa may echo this value
+        // back as the GET callback tid, so persist it before the STK request.
         $reference = 'ALX-' . $group->id . '-' . $data['userId'] . '-' . time();
 
-        // Initiate STK push before creating the subscription record
-        $mmService = new MobileMoneyService();
-        $pushResult = $mmService->initiateSTKPush(
-            $data['phone'],
-            $effectiveAmount,
-            $reference,
-            $data['paymentMethod']
-        );
-
-        $providerTxnId = null;
-        if (is_array($pushResult['raw'] ?? null)) {
-            $providerTxnId = $pushResult['raw']['tid']
-                ?? $pushResult['raw']['transaction_id']
-                ?? $pushResult['raw']['txn_id']
-                ?? null;
-        }
-
-        return DB::transaction(function () use ($data, $group, $reference, $pushResult, $effectiveAmount, $providerTxnId) {
+        [$sub, $payment] = DB::transaction(function () use ($data, $group, $reference, $effectiveAmount) {
             $sub = Subscription::create([
                 'user_id'           => $data['userId'],
                 'group_id'          => $group->id,
@@ -171,7 +155,7 @@ class SubscriptionController extends Controller
                 'payment_reference' => $reference,
             ]);
 
-            Payment::create([
+            $payment = Payment::create([
                 'subscription_id'   => $sub->id,
                 'user_id'           => $data['userId'],
                 'amount'            => $effectiveAmount,
@@ -180,15 +164,36 @@ class SubscriptionController extends Controller
                 'phone'             => $data['phone'],
                 'status'            => 'pending',
                 'payment_reference' => $reference,
-                'transaction_id'    => $providerTxnId,
+                'transaction_id'    => $reference,
             ]);
 
-            return response()->json([
-                'subscription'     => $sub->load(['payment', 'group']),
-                'paymentReference' => $reference,
-                'pushResult'       => $pushResult,
-            ], 201);
+            return [$sub, $payment];
         });
+
+        $mmService = new MobileMoneyService();
+        $pushResult = $mmService->initiateSTKPush(
+            $data['phone'],
+            $effectiveAmount,
+            $reference,
+            $data['paymentMethod']
+        );
+
+        if (is_array($pushResult['raw'] ?? null)) {
+            $providerTxnId = $pushResult['raw']['tid']
+                ?? $pushResult['raw']['transaction_id']
+                ?? $pushResult['raw']['txn_id']
+                ?? null;
+
+            if ($providerTxnId) {
+                $payment->update(['transaction_id' => $providerTxnId]);
+            }
+        }
+
+        return response()->json([
+            'subscription'     => $sub->fresh()->load(['payment', 'group']),
+            'paymentReference' => $reference,
+            'pushResult'       => $pushResult,
+        ], 201);
     }
 
     /**
