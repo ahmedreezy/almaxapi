@@ -9,6 +9,7 @@ use App\Services\MobileMoneyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * GET  /api/payments        — admin: all payments with user + subscription data
@@ -104,9 +105,32 @@ class PaymentController extends Controller
      */
     public function webhook(Request $request): JsonResponse
     {
-        $rawBody  = $request->getContent();
-        $signature = $request->header('X-Signature', $request->header('X-Webhook-Signature', ''));
+        $rawBody = $request->getContent();
 
+        // Jpesa calls this callback with GET parameters, especially:
+        //   ?tid=<provider transaction id>&status=approved|failed|closed
+        // A later "closed" callback must never undo an earlier approval.
+        if ($request->isMethod('get')) {
+            $tid    = trim((string) $request->query('tid', ''));
+            $status = $this->normaliseJpesaStatus((string) $request->query('status', ''));
+
+            if ($tid === '' && $status === 'unknown') {
+                return response()->json([
+                    'ok'       => true,
+                    'endpoint' => '/api/payments/webhook',
+                    'message'  => 'Payment callback endpoint is reachable',
+                ]);
+            }
+
+            return $this->processWebhookOutcome(
+                reference: trim((string) $request->query('tx', $request->query('reference', ''))),
+                status: $status,
+                txnId: $tid !== '' ? $tid : null,
+                source: 'jpesa-get'
+            );
+        }
+
+        $signature = $request->header('X-Signature', $request->header('X-Webhook-Signature', ''));
         $mmService = new MobileMoneyService();
 
         if (! $mmService->validateWebhookSignature($rawBody, $signature)) {
@@ -121,22 +145,45 @@ class PaymentController extends Controller
         if (empty($payload) && $request->isJson()) {
             $payload = $request->json()->all();
         }
-        $parsed  = $mmService->parseWebhookPayload($payload);
+        if (empty($payload) && Str::startsWith(trim($rawBody), '<')) {
+            $payload = $this->xmlPayloadToArray($rawBody);
+        }
 
-        $reference = $parsed['reference'] ?? '';
-        $status    = $parsed['status']    ?? '';
-        $txnId     = $parsed['transaction_id'] ?? null;
+        $parsed = $mmService->parseWebhookPayload($payload);
+
+        return $this->processWebhookOutcome(
+            reference: $parsed['reference'] ?? '',
+            status: $this->normaliseJpesaStatus($parsed['status'] ?? ''),
+            txnId: $parsed['transaction_id'] ?? null,
+            source: 'webhook'
+        );
+    }
+
+    private function processWebhookOutcome(string $reference, string $status, ?string $txnId, string $source): JsonResponse
+    {
+        $reference = trim($reference);
+        $txnId = $txnId !== null ? trim($txnId) : null;
+
+        if ($status === 'closed') {
+            Log::info('Payment webhook: closed status ignored', [
+                'source'    => $source,
+                'reference' => $reference,
+                'txn_id'    => $txnId,
+            ]);
+
+            return response()->json(['message' => 'Closed status ignored']);
+        }
 
         $sub = null;
 
-        if (! empty($reference)) {
+        if ($reference !== '') {
             $sub = Subscription::with(['payment', 'group'])
                 ->where('payment_reference', $reference)
                 ->where('status', 'pending')
                 ->first();
         }
 
-        if (! $sub && ! empty($txnId)) {
+        if (! $sub && $txnId !== null && $txnId !== '') {
             $sub = Subscription::with(['payment', 'group'])
                 ->where('status', 'pending')
                 ->whereHas('payment', function ($q) use ($txnId) {
@@ -145,19 +192,74 @@ class PaymentController extends Controller
                 ->first();
         }
 
-        if (! $sub && empty($reference) && empty($txnId)) {
-            return response()->json(['error' => 'Missing payment identifier'], 422);
+        // Some providers echo the merchant tx value as tid. Try tid as reference too.
+        if (! $sub && $txnId !== null && $txnId !== '') {
+            $sub = Subscription::with(['payment', 'group'])
+                ->where('payment_reference', $txnId)
+                ->where('status', 'pending')
+                ->first();
+        }
+
+        if (! $sub && $reference === '' && ($txnId === null || $txnId === '')) {
+            Log::warning('Payment webhook: missing payment identifier', [
+                'source' => $source,
+                'status' => $status,
+            ]);
+
+            return response()->json(['message' => 'Missing payment identifier']);
         }
 
         if (! $sub) {
-            Log::info('Payment webhook: no pending subscription for reference', ['reference' => $reference]);
-            // Return 200 so the provider does not keep retrying
+            Log::info('Payment webhook: no pending subscription matched callback', [
+                'source'    => $source,
+                'reference' => $reference,
+                'txn_id'    => $txnId,
+                'status'    => $status,
+            ]);
+
             return response()->json(['message' => 'No matching pending subscription']);
         }
 
-        $this->applyOutcome($sub, $status === 'success', $txnId, 'webhook');
+        if ($status === 'approved') {
+            $this->applyOutcome($sub, true, $txnId, $source);
+            return response()->json(['message' => 'Processed']);
+        }
 
-        return response()->json(['message' => 'Processed']);
+        if ($status === 'failed') {
+            $this->applyOutcome($sub, false, $txnId, $source);
+            return response()->json(['message' => 'Processed']);
+        }
+
+        Log::info('Payment webhook: unknown status ignored', [
+            'source'    => $source,
+            'reference' => $reference,
+            'txn_id'    => $txnId,
+            'status'    => $status,
+        ]);
+
+        return response()->json(['message' => 'Unknown status ignored']);
+    }
+
+    private function normaliseJpesaStatus(string $status): string
+    {
+        $status = strtolower(trim($status));
+
+        return match ($status) {
+            'approved', 'approve', 'success', 'successful', 'completed', 'ok' => 'approved',
+            'failed', 'failure', 'declined', 'rejected', 'cancelled', 'canceled', 'error' => 'failed',
+            'closed', 'close' => 'closed',
+            default => 'unknown',
+        };
+    }
+
+    private function xmlPayloadToArray(string $rawBody): array
+    {
+        $xml = @simplexml_load_string($rawBody, 'SimpleXMLElement', LIBXML_NOCDATA);
+        if (! $xml) {
+            return [];
+        }
+
+        return json_decode(json_encode($xml), true) ?: [];
     }
 
     public function reconcile(Request $request): JsonResponse
