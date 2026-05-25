@@ -21,12 +21,13 @@ class RecentWinController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'betType'    => ['required', 'string', 'max:100'],
-            'date'       => ['required', 'string', 'max:50'],
-            'staked'     => ['required', 'string', 'max:50'],
-            'returned'   => ['required', 'string', 'max:50'],
-            'odds'       => ['required', 'string', 'max:50'],
+            'betType'    => ['sometimes', 'string', 'max:100'],
+            'date'       => ['sometimes', 'string', 'max:50'],
+            'staked'     => ['sometimes', 'string', 'max:50'],
+            'returned'   => ['sometimes', 'string', 'max:50'],
+            'odds'       => ['sometimes', 'string', 'max:50'],
             'memberName' => ['sometimes', 'nullable', 'string', 'max:200'],
+            'caption'    => ['sometimes', 'nullable', 'string'],
             'image'      => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
         ]);
 
@@ -36,13 +37,14 @@ class RecentWinController extends Controller
         }
 
         $win = RecentWin::create([
-            'bet_type'    => $data['betType'],
-            'date'        => $data['date'],
-            'staked'      => $data['staked'],
-            'returned'    => $data['returned'],
-            'odds'        => $data['odds'],
+            'bet_type'    => $data['betType'] ?? 'Winning Proof',
+            'date'        => $data['date'] ?? '',
+            'staked'      => $data['staked'] ?? '',
+            'returned'    => $data['returned'] ?? '',
+            'odds'        => $data['odds'] ?? '',
             'member_name' => $data['memberName'] ?? '',
             'image_url'   => $imageUrl ?? '',
+            'caption'     => $data['caption'] ?? '',
         ]);
 
         return response()->json($win, 201);
@@ -58,6 +60,7 @@ class RecentWinController extends Controller
             'returned'   => ['sometimes', 'string', 'max:50'],
             'odds'       => ['sometimes', 'string', 'max:50'],
             'memberName' => ['sometimes', 'nullable', 'string', 'max:200'],
+            'caption'    => ['sometimes', 'nullable', 'string'],
             'image'      => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
         ]);
 
@@ -74,6 +77,7 @@ class RecentWinController extends Controller
             'odds'        => $data['odds']         ?? $win->odds,
             'member_name' => $data['memberName']  ?? $win->member_name,
             'image_url'   => $data['image_url']   ?? $win->image_url,
+            'caption'     => $data['caption']     ?? $win->caption,
         ]);
 
         return response()->json($win->fresh());

@@ -16,7 +16,7 @@ class FreeOdd2 extends Model
 
     protected $fillable = [
         'team_a', 'team_b', 'pick', 'odd',
-        'time', 'competition', 'image_url',
+        'time', 'competition', 'image_url', 'caption',
     ];
 
     protected $casts = [
@@ -36,6 +36,7 @@ class FreeOdd2 extends Model
             'time'        => '20:45',
             'competition' => 'Premier League',
             'image_url'   => '',
+            'caption'     => '',
         ]);
     }
 }

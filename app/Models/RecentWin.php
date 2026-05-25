@@ -12,7 +12,7 @@ class RecentWin extends Model
 
     protected $fillable = [
         'bet_type', 'date', 'staked', 'returned',
-        'odds', 'member_name', 'image_url',
+        'odds', 'member_name', 'image_url', 'caption',
     ];
 
     protected $casts = [

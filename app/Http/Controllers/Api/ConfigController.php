@@ -32,6 +32,7 @@ class ConfigController extends Controller
             'odd'         => ['sometimes', 'string', 'max:20'],
             'time'        => ['sometimes', 'string', 'max:20'],
             'competition' => ['sometimes', 'string', 'max:200'],
+            'caption'     => ['sometimes', 'nullable', 'string'],
             'image'       => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
         ]);
 
@@ -49,6 +50,7 @@ class ConfigController extends Controller
             'odd'         => $data['odd']          ?? $odd->odd,
             'time'        => $data['time']         ?? $odd->time,
             'competition' => $data['competition']  ?? $odd->competition,
+            'caption'     => $data['caption']      ?? $odd->caption,
             'image_url'   => $data['image_url']    ?? $odd->image_url,
         ]);
 
