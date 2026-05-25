@@ -21,10 +21,10 @@ class FootballTipController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'home'        => ['required', 'string', 'max:200'],
-            'away'        => ['required', 'string', 'max:200'],
-            'competition' => ['required', 'string', 'max:200'],
-            'kickoff'     => ['required', 'string', 'max:50'],
+            'home'        => ['sometimes', 'string', 'max:200'],
+            'away'        => ['sometimes', 'string', 'max:200'],
+            'competition' => ['sometimes', 'string', 'max:200'],
+            'kickoff'     => ['sometimes', 'string', 'max:50'],
             'winProb'     => ['sometimes', 'integer', 'min:0', 'max:100'],
             'kitColor'    => ['sometimes', 'string', 'max:20'],
             'kitNumber'   => ['sometimes', 'string', 'max:10'],
@@ -40,10 +40,10 @@ class FootballTipController extends Controller
         }
 
         $tip = FootballTip::create([
-            'home'        => $data['home'],
-            'away'        => $data['away'],
-            'competition' => $data['competition'],
-            'kickoff'     => $data['kickoff'],
+            'home'        => $data['home'] ?? '',
+            'away'        => $data['away'] ?? '',
+            'competition' => $data['competition'] ?? '',
+            'kickoff'     => $data['kickoff'] ?? '',
             'win_prob'    => $data['winProb'] ?? 75,
             'kit_color'   => $data['kitColor'] ?? '#FFD700',
             'kit_number'  => $data['kitNumber'] ?? '10',

@@ -124,6 +124,8 @@ Route::prefix('football-tips')->group(function () {
         ->middleware('auth.admin');
     Route::put('/{id}', [FootballTipController::class, 'update'])
         ->middleware('auth.admin');
+    Route::post('/{id}', [FootballTipController::class, 'update'])   // POST = PHP parses $_FILES; PUT does not
+        ->middleware('auth.admin');
     Route::delete('/{id}', [FootballTipController::class, 'destroy'])
         ->middleware('auth.admin');
 });
@@ -148,6 +150,8 @@ Route::prefix('recent-wins')->group(function () {
         ->middleware('auth.admin');
     Route::put('/{id}', [RecentWinController::class, 'update'])
         ->middleware('auth.admin');
+    Route::post('/{id}', [RecentWinController::class, 'update'])     // POST = PHP parses $_FILES; PUT does not
+        ->middleware('auth.admin');
     Route::delete('/{id}', [RecentWinController::class, 'destroy'])
         ->middleware('auth.admin');
 });
@@ -160,6 +164,8 @@ Route::prefix('testimonials')->group(function () {
         ->middleware('auth.admin');
     Route::put('/{id}', [TestimonialController::class, 'update'])
         ->middleware('auth.admin');
+    Route::post('/{id}', [TestimonialController::class, 'update'])   // POST = PHP parses $_FILES; PUT does not
+        ->middleware('auth.admin');
     Route::delete('/{id}', [TestimonialController::class, 'destroy'])
         ->middleware('auth.admin');
 });
@@ -169,6 +175,8 @@ Route::prefix('config')->group(function () {
     Route::get('/free-odd2', [ConfigController::class, 'getFreeOdd2'])
         ->middleware('throttle:api');
     Route::put('/free-odd2', [ConfigController::class, 'updateFreeOdd2'])
+        ->middleware('auth.admin');
+    Route::post('/free-odd2', [ConfigController::class, 'updateFreeOdd2'])  // POST = PHP parses $_FILES; PUT does not
         ->middleware('auth.admin');
     Route::get('/vip-config', [ConfigController::class, 'getVipConfig'])
         ->middleware('throttle:api');

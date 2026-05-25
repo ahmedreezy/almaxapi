@@ -124,6 +124,7 @@ return new class extends Migration
                 $table->string('odds', 50);
                 $table->string('member_name', 200)->default('');
                 $table->string('image_url', 500)->default('');
+                $table->text('caption')->default('');
                 $table->timestampTz('created_at')->useCurrent();
             });
         }
@@ -172,6 +173,7 @@ return new class extends Migration
                 $table->string('time', 20)->default('20:45');
                 $table->string('competition', 200)->default('Premier League');
                 $table->string('image_url', 500)->default('');
+                $table->text('caption')->default('');
                 $table->timestampTz('updated_at')->useCurrent();
             });
         }
