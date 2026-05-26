@@ -13,9 +13,9 @@ class FootballTipController extends Controller
 
     public function index(): JsonResponse
     {
-        return response()->json(
-            FootballTip::orderByDesc('created_at')->get()
-        );
+        $tips = FootballTip::with('group')->orderByDesc('created_at')->get();
+
+        return response()->json($tips->map(fn (FootballTip $t) => $this->formatTip($t)));
     }
 
     public function store(Request $request): JsonResponse
@@ -32,6 +32,7 @@ class FootballTipController extends Controller
             'accent'      => ['sometimes', 'string', 'max:20'],
             'caption'     => ['sometimes', 'string'],
             'image'       => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
+            'group_id'    => ['sometimes', 'nullable', 'integer', 'exists:groups,id'],
         ]);
 
         $imageUrl = null;
@@ -51,9 +52,10 @@ class FootballTipController extends Controller
             'accent'      => $data['accent'] ?? '#FFD700',
             'image_url'   => $imageUrl ?? '',
             'caption'     => $data['caption'] ?? '',
+            'group_id'    => $data['group_id'] ?? null,
         ]);
 
-        return response()->json($tip, 201);
+        return response()->json($this->formatTip($tip->load('group')), 201);
     }
 
     public function update(Request $request, int $id): JsonResponse
@@ -71,6 +73,7 @@ class FootballTipController extends Controller
             'accent'      => ['sometimes', 'string', 'max:20'],
             'caption'     => ['sometimes', 'string'],
             'image'       => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
+            'group_id'    => ['sometimes', 'nullable', 'integer', 'exists:groups,id'],
         ]);
 
         if ($request->hasFile('image')) {
@@ -90,9 +93,10 @@ class FootballTipController extends Controller
             'accent'      => $data['accent']       ?? $tip->accent,
             'image_url'   => $data['image_url']    ?? $tip->image_url,
             'caption'     => $data['caption']      ?? $tip->caption,
+            'group_id'    => array_key_exists('group_id', $data) ? $data['group_id'] : $tip->group_id,
         ]);
 
-        return response()->json($tip->fresh());
+        return response()->json($this->formatTip($tip->fresh()->load('group')));
     }
 
     public function destroy(int $id): JsonResponse
@@ -102,5 +106,38 @@ class FootballTipController extends Controller
         $tip->delete();
 
         return response()->json(['message' => 'Deleted.']);
+    }
+
+    // ─── Private helpers ──────────────────────────────────────────────────
+
+    private function formatTip(FootballTip $tip): array
+    {
+        $group = $tip->relationLoaded('group') ? $tip->group : null;
+
+        return [
+            'id'          => $tip->id,
+            'home'        => $tip->home,
+            'away'        => $tip->away,
+            'competition' => $tip->competition,
+            'kickoff'     => $tip->kickoff,
+            'win_prob'    => $tip->win_prob,
+            'kit_color'   => $tip->kit_color,
+            'kit_number'  => $tip->kit_number,
+            'prediction'  => $tip->prediction,
+            'accent'      => $tip->accent,
+            'image_url'   => $tip->image_url,
+            'caption'     => $tip->caption,
+            'created_at'  => $tip->created_at,
+            'groupId'     => $tip->group_id,
+            'group'       => $group ? [
+                'id'           => $group->id,
+                'name'         => $group->name,
+                'planType'     => $group->plan_type,
+                'oddsType'     => $group->odds_type,
+                'effectivePrice' => $group->effectivePrice(),
+                'photoUrl'     => $group->photo_url ?? '',
+                'isClosed'     => $group->isPastDeadline(),
+            ] : null,
+        ];
     }
 }
