@@ -12,6 +12,7 @@ class Group extends Model
     protected $fillable = [
         'name', 'odds_type', 'plan_type', 'price', 'betslip_link', 'betslip_code',
         'is_special', 'is_active', 'special_price', 'special_odds', 'subscription_deadline',
+        'photo_url',
     ];
 
     protected $casts = [

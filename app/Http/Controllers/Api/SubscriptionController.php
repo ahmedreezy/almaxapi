@@ -284,6 +284,7 @@ class SubscriptionController extends Controller
             'amount'           => $sub->amount,
             'betslipLink'      => $includeBetslip ? $betslipLink : '',
             'betslipCode'      => $includeBetslip ? $betslipCode : '',
+            'packagePhoto'     => $group?->photo_url ?? '',
             'startedAt'        => $sub->started_at,
             'expiresAt'        => $sub->expires_at,
             'createdAt'        => $sub->created_at,

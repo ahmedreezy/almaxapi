@@ -75,6 +75,10 @@ Route::prefix('groups')->group(function () {
     Route::patch('/{id}', [GroupController::class, 'update'])
         ->middleware('auth.admin');
 
+    // Admin: POST fallback for multipart/form-data updates (browsers can't send PATCH with files)
+    Route::post('/{id}', [GroupController::class, 'update'])
+        ->middleware('auth.admin');
+
     // Admin: delete a package (blocked if subscriptions exist)
     Route::delete('/{id}', [GroupController::class, 'destroy'])
         ->middleware('auth.admin');

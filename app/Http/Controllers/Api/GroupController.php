@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
  */
 class GroupController extends Controller
 {
+    use HandlesFileUploads;
     /**
      * Public: return only groups that end-users can purchase.
      * Regular groups: is_active must be true.
@@ -61,13 +62,20 @@ class GroupController extends Controller
             'special_price'         => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'special_odds'          => ['sometimes', 'nullable', 'string', 'max:50'],
             'subscription_deadline' => ['sometimes', 'nullable', 'date_format:H:i'],
+            'photo'                 => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
         ]);
+
+        $photoUrl = null;
+        if ($request->hasFile('photo')) {
+            $photoUrl = $this->storeUpload($request->file('photo'), 'groups');
+        }
 
         $group = Group::create(array_merge([
             'betslip_link' => '',
             'betslip_code' => '',
             'is_special'   => false,
             'is_active'    => true,
+            'photo_url'    => $photoUrl ?? '',
         ], $data));
 
         return response()->json($this->formatGroup($group), 201);
@@ -90,9 +98,24 @@ class GroupController extends Controller
             'special_price'         => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'special_odds'          => ['sometimes', 'nullable', 'string', 'max:50'],
             'subscription_deadline' => ['sometimes', 'nullable', 'date_format:H:i'],
+            'photo'                 => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
+            'clear_photo'           => ['sometimes', 'boolean'],
         ]);
 
+        $clearPhoto = !empty($data['clear_photo']);
+        unset($data['clear_photo']);
+
         $group = Group::findOrFail($id);
+
+        if ($request->hasFile('photo')) {
+            $this->deleteUpload($group->photo_url);
+            $data['photo_url'] = $this->storeUpload($request->file('photo'), 'groups');
+        } elseif ($clearPhoto) {
+            if ($group->photo_url) {
+                $this->deleteUpload($group->photo_url);
+            }
+            $data['photo_url'] = '';
+        }
 
         // Allow explicit null for special_price and special_odds (to reset)
         $group->fill($data);
@@ -141,22 +164,20 @@ class GroupController extends Controller
     {
         $group = Group::findOrFail($id);
 
-        if ($group->subscriptions()->whereIn('status', ['active', 'pending'])->exists()) {
-            return response()->json([
-                'message' => 'Cannot delete a group with active or pending subscriptions. Deactivate it instead.',
-            ], 409);
-        }
-
-        // Cascade-delete historical expired/rejected subscriptions and their payments
+        // Cascade-delete all subscriptions and payments regardless of status,
+        // then remove the package photo and the group itself.
         \Illuminate\Support\Facades\DB::transaction(function () use ($group) {
             $group->subscriptions()->each(function ($sub) {
                 $sub->payment()->delete();
                 $sub->delete();
             });
+            if ($group->photo_url) {
+                $this->deleteUpload($group->photo_url);
+            }
             $group->delete();
         });
 
-        return response()->json(['message' => 'Group deleted.'], 200);
+        return response()->json(['message' => 'Package deleted.'], 200);
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────
@@ -176,6 +197,7 @@ class GroupController extends Controller
             'specialPrice'         => $group->special_price,
             'specialOdds'          => $group->special_odds,
             'effectivePrice'       => $group->effectivePrice(),
+            'photoUrl'             => $group->photo_url ?? '',
             'subscriptionDeadline' => $group->subscription_deadline
                 ? substr($group->subscription_deadline, 0, 5)   // trim to "HH:MM"
                 : null,
