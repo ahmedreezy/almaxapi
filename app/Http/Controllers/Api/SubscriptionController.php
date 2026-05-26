@@ -207,26 +207,6 @@ class SubscriptionController extends Controller
         if ($sub->status === 'pending') {
             $this->tryActivateFromProviderQuery($sub);
             $sub = $sub->fresh(['payment', 'group']);
-
-            if ($sub->status === 'pending') {
-                $activeSibling = Subscription::with(['payment', 'group'])
-                    ->where('user_id', $sub->user_id)
-                    ->where('group_id', $sub->group_id)
-                    ->where('phone', $sub->phone)
-                    ->where('status', 'active')
-                    ->where(function ($q) {
-                        $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
-                    })
-                    ->orderByDesc('started_at')
-                    ->first();
-
-                if ($activeSibling) {
-                    return response()->json([
-                        'status'       => 'active',
-                        'subscription' => $this->formatSub($activeSibling, true),
-                    ]);
-                }
-            }
         }
 
         // Auto-expire if needed
