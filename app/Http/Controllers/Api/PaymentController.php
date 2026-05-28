@@ -30,10 +30,10 @@ class PaymentController extends Controller
 
         $base = Payment::query();
         if ($from) {
-            $base->where('created_at', '>=', $from);
+            $base->whereDate('created_at', '>=', $from);
         }
         if ($to) {
-            $base->where('created_at', '<=', $to);
+            $base->whereDate('created_at', '<=', $to);
         }
 
         $summary = (clone $base)

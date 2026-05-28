@@ -29,6 +29,18 @@ class SubscriptionController extends Controller
         // Auto-delete stale pending/failed subs whose booking deadline has passed
         $this->cleanupDeadlineSubscriptions();
 
+        // Timeout pending subscriptions that have been waiting more than 10 minutes
+        $stalePendingIds = Subscription::where('status', 'pending')
+            ->where('created_at', '<', now()->subMinutes(10))
+            ->pluck('id');
+        if ($stalePendingIds->isNotEmpty()) {
+            Payment::whereIn('subscription_id', $stalePendingIds)
+                ->where('status', 'pending')
+                ->update(['status' => 'failed']);
+            Subscription::whereIn('id', $stalePendingIds)
+                ->update(['status' => 'failed']);
+        }
+
         Subscription::where('status', 'active')
             ->whereNotNull('expires_at')
             ->where('expires_at', '<', now())
@@ -75,6 +87,20 @@ class SubscriptionController extends Controller
             'paymentMethod' => ['required', 'string', 'in:mtn,airtel'],
             'phone'         => ['required', 'string', 'max:30'],
         ]);
+
+        // Fail any pending records for this user+group older than 10 minutes so they don't stack
+        $stale = Subscription::with('payment')
+            ->where('user_id', $data['userId'])
+            ->where('group_id', $data['groupId'])
+            ->where('status', 'pending')
+            ->where('created_at', '<', now()->subMinutes(10))
+            ->get();
+        foreach ($stale as $staleSub) {
+            DB::transaction(function () use ($staleSub) {
+                $staleSub->payment()->update(['status' => 'failed']);
+                $staleSub->update(['status' => 'failed']);
+            });
+        }
 
         $duplicateWindowSeconds = max((int) env('PAYMENT_DUPLICATE_WINDOW_SECONDS', 180), 30);
         $existingPending = Subscription::with(['payment', 'group'])
