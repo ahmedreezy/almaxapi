@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 
 class Group extends Model
 {
@@ -60,11 +61,46 @@ class Group extends Model
      */
     public function isPastDeadline(): bool
     {
-        if ($this->subscription_deadline === null) {
+        return self::isDeadlineClosed($this->subscription_deadline);
+    }
+
+    public static function deadlineAt(?string $value): ?Carbon
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $value = trim($value);
+
+        if (preg_match('/^\d{2}:\d{2}$/', $value)) {
+            return now()->startOfDay()->setTimeFromTimeString($value);
+        }
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/', $value)) {
+            return Carbon::createFromFormat('Y-m-d\TH:i', $value);
+        }
+
+        return null;
+    }
+
+    public static function isDeadlineClosed(?string $value): bool
+    {
+        $deadline = self::deadlineAt($value);
+        if (! $deadline) {
             return false;
         }
 
-        return now()->format('H:i') >= substr($this->subscription_deadline, 0, 5);
+        return now()->gt($deadline);
+    }
+
+    public static function isDeadlinePastOrCurrent(?string $value): bool
+    {
+        $deadline = self::deadlineAt($value);
+        if (! $deadline) {
+            return false;
+        }
+
+        return now()->gte($deadline);
     }
 
     /**
