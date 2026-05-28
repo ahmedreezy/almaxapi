@@ -480,15 +480,14 @@ class SubscriptionController extends Controller
         $groups = Group::whereNotNull('subscription_deadline')->get();
 
         foreach ($groups as $group) {
-            $deadlineToday = now()->startOfDay()->setTimeFromTimeString($group->subscription_deadline);
+            $deadline = Group::deadlineAt($group->subscription_deadline);
 
-            // Skip groups whose deadline hasn't passed yet today
-            if (now()->lt($deadlineToday)) {
+            if (! $deadline || now()->lt($deadline)) {
                 continue;
             }
 
             // Subs created within 2 hours before deadline are kept for admin review
-            $cutoff = $deadlineToday->copy()->subHours(2);
+            $cutoff = $deadline->copy()->subHours(2);
 
             Subscription::with(['payment'])
                 ->where('group_id', $group->id)

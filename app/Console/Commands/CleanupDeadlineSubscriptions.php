@@ -32,15 +32,14 @@ class CleanupDeadlineSubscriptions extends Command
         $deleted = 0;
 
         foreach ($groups as $group) {
-            $deadlineToday = now()->startOfDay()->setTimeFromTimeString($group->subscription_deadline);
+            $deadline = Group::deadlineAt($group->subscription_deadline);
 
-            // Skip groups whose deadline hasn't passed yet today
-            if (now()->lt($deadlineToday)) {
+            if (! $deadline || now()->lt($deadline)) {
                 continue;
             }
 
             // Anything created before (deadline − 2h) is auto-deleted
-            $cutoff = $deadlineToday->copy()->subHours(2);
+            $cutoff = $deadline->copy()->subHours(2);
 
             $subs = Subscription::with(['payment'])
                 ->where('group_id', $group->id)

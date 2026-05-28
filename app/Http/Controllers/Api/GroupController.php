@@ -61,7 +61,7 @@ class GroupController extends Controller
             'is_active'             => ['sometimes', 'boolean'],
             'special_price'         => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'special_odds'          => ['sometimes', 'nullable', 'string', 'max:50'],
-            'subscription_deadline' => ['sometimes', 'nullable', 'date_format:H:i'],
+            'subscription_deadline' => $this->deadlineRules(),
             'photo'                 => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
         ]);
 
@@ -97,7 +97,7 @@ class GroupController extends Controller
             'is_active'             => ['sometimes', 'boolean'],
             'special_price'         => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'special_odds'          => ['sometimes', 'nullable', 'string', 'max:50'],
-            'subscription_deadline' => ['sometimes', 'nullable', 'date_format:H:i'],
+            'subscription_deadline' => $this->deadlineRules(),
             'photo'                 => ['sometimes', 'nullable', 'file', 'mimes:jpeg,png,webp', 'max:5120'],
             'clear_photo'           => ['sometimes', 'boolean'],
         ]);
@@ -182,6 +182,30 @@ class GroupController extends Controller
 
     // ─── Private helpers ──────────────────────────────────────────────────
 
+    private function deadlineRules(): array
+    {
+        return [
+            'sometimes',
+            'nullable',
+            'string',
+            'max:16',
+            function (string $attribute, mixed $value, \Closure $fail): void {
+                if ($value === null || $value === '') {
+                    return;
+                }
+
+                if (! Group::deadlineAt((string) $value)) {
+                    $fail('The deadline must be a valid date and time.');
+                    return;
+                }
+
+                if (Group::isDeadlinePastOrCurrent((string) $value)) {
+                    $fail('The deadline must be a future date and time.');
+                }
+            },
+        ];
+    }
+
     private function formatGroup(Group $group): array
     {
         return [
@@ -198,9 +222,7 @@ class GroupController extends Controller
             'specialOdds'          => $group->special_odds,
             'effectivePrice'       => $group->effectivePrice(),
             'photoUrl'             => $group->photo_url ?? '',
-            'subscriptionDeadline' => $group->subscription_deadline
-                ? substr($group->subscription_deadline, 0, 5)   // trim to "HH:MM"
-                : null,
+            'subscriptionDeadline' => $group->subscription_deadline ?: null,
             'isClosed'             => $group->isPastDeadline(),
         ];
     }
