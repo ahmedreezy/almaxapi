@@ -41,6 +41,16 @@ return [
         'api_secret'    => env('MOBILE_MONEY_API_SECRET', ''),
         'webhook_secret'=> env('MOBILE_MONEY_WEBHOOK_SECRET', ''),
         'callback_url'  => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
+        'agent_commission' => [
+            'enabled'          => env('JPESA_AGENT_COMMISSION_ENABLED', false),
+            'ratio'            => env('JPESA_AGENT_COMMISSION_RATIO', 0.1),
+            'recipient_type'   => env('JPESA_AGENT_COMMISSION_RECIPIENT_TYPE', 'business'),
+            'recipient_email'  => env('JPESA_AGENT_COMMISSION_RECIPIENT_EMAIL', ''),
+            'recipient_mobile' => env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', ''),
+            'transfer_action'  => env('JPESA_AGENT_COMMISSION_TRANSFER_ACTION', 'debit'),
+            'transfer_pt'      => env('JPESA_AGENT_COMMISSION_TRANSFER_PT', 'gwallet'),
+            'currency'         => env('JPESA_AGENT_COMMISSION_CURRENCY', 'UGX'),
+        ],
     ],
 
 ];

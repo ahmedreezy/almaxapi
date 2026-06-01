@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Payment;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -24,13 +25,31 @@ class MobileMoneyService
     private string $apiKey;
     private string $apiSecret;
     private string $callbackUrl;
+    private bool $agentCommissionEnabled;
+    private float $agentCommissionRatio;
+    private string $agentCommissionRecipientType;
+    private string $agentCommissionRecipientEmail;
+    private string $agentCommissionRecipientMobile;
+    private string $agentCommissionTransferAction;
+    private string $agentCommissionTransferPt;
+    private string $agentCommissionCurrency;
 
     public function __construct()
     {
-        $this->apiUrl      = config('services.mobile_money.api_url', '');
-        $this->apiKey      = config('services.mobile_money.api_key', '');
-        $this->apiSecret   = config('services.mobile_money.api_secret', '');
-        $this->callbackUrl = config('services.mobile_money.callback_url', '');
+        $this->apiUrl      = (string) config('services.mobile_money.api_url', '');
+        $this->apiKey      = (string) config('services.mobile_money.api_key', '');
+        $this->apiSecret   = (string) config('services.mobile_money.api_secret', '');
+        $this->callbackUrl = (string) config('services.mobile_money.callback_url', '');
+
+        $commission = config('services.mobile_money.agent_commission', []);
+        $this->agentCommissionEnabled       = filter_var($commission['enabled'] ?? false, FILTER_VALIDATE_BOOL);
+        $this->agentCommissionRatio         = (float) ($commission['ratio'] ?? 0.1);
+        $this->agentCommissionRecipientType = strtolower((string) ($commission['recipient_type'] ?? 'email'));
+        $this->agentCommissionRecipientEmail = trim((string) ($commission['recipient_email'] ?? ''));
+        $this->agentCommissionRecipientMobile = trim((string) ($commission['recipient_mobile'] ?? ''));
+        $this->agentCommissionTransferAction = trim((string) ($commission['transfer_action'] ?? 'debit'));
+        $this->agentCommissionTransferPt     = trim((string) ($commission['transfer_pt'] ?? 'gwallet'));
+        $this->agentCommissionCurrency       = strtoupper(trim((string) ($commission['currency'] ?? 'UGX')));
     }
 
     /**
@@ -348,6 +367,144 @@ class MobileMoneyService
         }
     }
 
+    /**
+     * Send the configured agent's commission for a confirmed payment.
+     *
+     * The method first claims the payment row by setting
+     * agent_commission_status=processing. That keeps repeated JPesa callbacks
+     * from transferring the same commission twice.
+     *
+     * @return array{success: bool, skipped?: bool, message: string, raw?: array}
+     */
+    public function processAgentCommission(Payment $payment, string $source): array
+    {
+        if (! $this->agentCommissionEnabled || $this->agentCommissionRatio <= 0) {
+            return [
+                'success' => false,
+                'skipped' => true,
+                'message' => 'Agent commission is disabled.',
+            ];
+        }
+
+        $payment->refresh();
+
+        if ($payment->status !== 'confirmed') {
+            return [
+                'success' => false,
+                'skipped' => true,
+                'message' => 'Payment is not confirmed.',
+            ];
+        }
+
+        $commissionAmount = (int) round(((float) $payment->amount) * $this->agentCommissionRatio);
+        if ($commissionAmount < 1) {
+            return [
+                'success' => false,
+                'skipped' => true,
+                'message' => 'Commission amount rounded below 1.',
+            ];
+        }
+
+        $recipient = $this->agentCommissionRecipient();
+        if ($recipient['value'] === '') {
+            Log::warning('MobileMoneyService: agent commission recipient not configured.', [
+                'payment_id' => $payment->id,
+                'source'     => $source,
+            ]);
+
+            return [
+                'success' => false,
+                'skipped' => true,
+                'message' => 'Agent commission recipient is not configured.',
+            ];
+        }
+
+        $reference = $payment->agent_commission_reference ?: $this->buildAgentCommissionReference($payment);
+
+        $claimed = Payment::whereKey($payment->id)
+            ->where('status', 'confirmed')
+            ->where(function ($query) {
+                $query->whereNull('agent_commission_status')
+                    ->orWhere('agent_commission_status', '')
+                    ->orWhere('agent_commission_status', 'failed');
+            })
+            ->update([
+                'agent_commission_amount'       => $commissionAmount,
+                'agent_commission_ratio'        => $this->agentCommissionRatio,
+                'agent_commission_status'       => 'processing',
+                'agent_commission_reference'    => $reference,
+                'agent_commission_recipient'    => $recipient['display'],
+                'agent_commission_error'        => null,
+                'agent_commission_processed_at' => null,
+            ]);
+
+        if ($claimed === 0) {
+            Log::info('MobileMoneyService: agent commission already handled or in progress.', [
+                'payment_id' => $payment->id,
+                'source'     => $source,
+                'status'     => $payment->agent_commission_status,
+            ]);
+
+            return [
+                'success' => false,
+                'skipped' => true,
+                'message' => 'Agent commission already handled or in progress.',
+            ];
+        }
+
+        $description = 'Almax agent commission for payment ' . ($payment->payment_reference ?: $payment->id);
+        $result = $this->sendJpesaInternalTransfer(
+            amount: $commissionAmount,
+            reference: $reference,
+            description: $description,
+            recipient: $recipient
+        );
+
+        $payment = $payment->fresh();
+
+        if ($result['success']) {
+            $payment->update([
+                'agent_commission_status'         => 'sent',
+                'agent_commission_transaction_id' => $result['transaction_id'] ?? null,
+                'agent_commission_error'          => null,
+                'agent_commission_processed_at'   => now(),
+            ]);
+
+            Log::info('MobileMoneyService: agent commission sent.', [
+                'payment_id' => $payment->id,
+                'amount'     => $commissionAmount,
+                'reference'  => $reference,
+                'source'     => $source,
+            ]);
+
+            return [
+                'success' => true,
+                'message' => 'Agent commission sent.',
+                'raw'     => $result['raw'] ?? [],
+            ];
+        }
+
+        $payment->update([
+            'agent_commission_status'       => 'failed',
+            'agent_commission_error'        => substr($result['message'] ?? 'Agent commission transfer failed.', 0, 1000),
+            'agent_commission_processed_at' => now(),
+        ]);
+
+        Log::warning('MobileMoneyService: agent commission transfer failed.', [
+            'payment_id' => $payment->id,
+            'amount'     => $commissionAmount,
+            'reference'  => $reference,
+            'source'     => $source,
+            'message'    => $result['message'] ?? 'unknown',
+        ]);
+
+        return [
+            'success' => false,
+            'message' => $result['message'] ?? 'Agent commission transfer failed.',
+            'raw'     => $result['raw'] ?? [],
+        ];
+    }
+
     private function normalizePhone(string $phone): string
     {
         $digits = preg_replace('/\D+/', '', $phone ?? '') ?? '';
@@ -361,6 +518,154 @@ class MobileMoneyService
         }
 
         return $digits;
+    }
+
+    /**
+     * @param  array{field: string, value: string, display: string} $recipient
+     * @return array{success: bool, message: string, transaction_id?: string|null, raw?: array}
+     */
+    private function sendJpesaInternalTransfer(int $amount, string $reference, string $description, array $recipient): array
+    {
+        if (empty($this->apiUrl) || empty($this->apiKey)) {
+            return [
+                'success' => false,
+                'message' => 'JPesa source account is not configured.',
+            ];
+        }
+
+        $fields = [
+            '_key_'       => $this->apiKey,
+            'cmd'         => 'account',
+            'action'      => $this->agentCommissionTransferAction ?: 'debit',
+        ];
+
+        if ($this->agentCommissionTransferPt !== '') {
+            $fields['pt'] = $this->agentCommissionTransferPt;
+        }
+
+        $fields[$recipient['field']] = $recipient['value'];
+        $fields['cur'] = $this->agentCommissionCurrency ?: 'UGX';
+        $fields['amount'] = (string) $amount;
+        $fields['callback'] = $this->callbackUrl;
+        $fields['tx'] = $reference;
+        $fields['description'] = $description;
+
+        $apiUrl = $this->jpesaApiEndpoint();
+        $xml = $this->buildJpesaXml($fields);
+
+        try {
+            $response = Http::withHeaders([
+                    'Content-Type' => 'text/xml',
+                    'Accept'       => 'application/json',
+                ])
+                ->timeout(30)
+                ->withBody($xml, 'text/xml')
+                ->post($apiUrl);
+
+            $json = json_decode((string) $response->body(), true);
+            if (! is_array($json)) {
+                $json = [];
+            }
+
+            $success = $this->providerResponseWasAccepted($response, $json);
+            $transactionId = $json['tid']
+                ?? $json['transaction_id']
+                ?? $json['txn_id']
+                ?? $json['trx_id']
+                ?? null;
+
+            return [
+                'success'        => $success,
+                'message'        => $json['message'] ?? $json['msg'] ?? ($success ? 'Transfer accepted.' : 'Transfer rejected by provider.'),
+                'transaction_id' => $transactionId,
+                'raw'            => $json ?: ['body' => $response->body()],
+            ];
+        } catch (\Throwable $e) {
+            Log::error('MobileMoneyService: JPesa internal transfer request failed.', [
+                'reference' => $reference,
+                'endpoint'  => $apiUrl,
+                'error'     => $e->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Could not send JPesa internal transfer. Please retry from the payment record.',
+            ];
+        }
+    }
+
+    /**
+     * @return array{field: string, value: string, display: string}
+     */
+    private function agentCommissionRecipient(): array
+    {
+        $email = $this->agentCommissionRecipientEmail;
+        $mobile = $this->agentCommissionRecipientMobile !== ''
+            ? $this->normalizePhone($this->agentCommissionRecipientMobile)
+            : '';
+
+        $useMobile = $this->agentCommissionRecipientType === 'mobile';
+        if ($useMobile && $mobile !== '') {
+            return [
+                'field'   => 'mobile',
+                'value'   => $mobile,
+                'display' => $email !== '' ? "{$email} ({$mobile})" : $mobile,
+            ];
+        }
+
+        if ($email !== '') {
+            return [
+                'field'   => 'business',
+                'value'   => $email,
+                'display' => $mobile !== '' ? "{$email} ({$mobile})" : $email,
+            ];
+        }
+
+        return [
+            'field'   => 'mobile',
+            'value'   => $mobile,
+            'display' => $mobile,
+        ];
+    }
+
+    private function buildAgentCommissionReference(Payment $payment): string
+    {
+        $hash = substr(sha1(($payment->payment_reference ?? '') . '|' . $payment->id), 0, 10);
+
+        return 'ALX-COM-' . $payment->id . '-' . $hash;
+    }
+
+    private function jpesaApiEndpoint(): string
+    {
+        if (str_contains($this->apiUrl, 'my.jpesa.com') && str_contains($this->apiUrl, '/api/collect')) {
+            return 'https://my.jpesa.com/api/';
+        }
+
+        return $this->apiUrl;
+    }
+
+    private function providerResponseWasAccepted($response, array $json): bool
+    {
+        $status = strtolower((string) (
+            ($json['status'] ?? null)
+            ?? ($json['payment_status'] ?? null)
+            ?? ($json['result'] ?? null)
+            ?? ($json['state'] ?? null)
+            ?? ''
+        ));
+        $apiStatus = strtolower((string) (($json['api_status'] ?? $json['apiStatus'] ?? '')));
+        $messageText = strtolower((string) ($json['message'] ?? $json['msg'] ?? ''));
+
+        $looksAccepted = in_array($status, ['success', 'successful', 'accepted', 'pending', 'processing', 'queued', 'approved', 'ok', 'completed'], true)
+            || in_array($apiStatus, ['success', 'successful', 'accepted', 'ok'], true);
+        $looksError = in_array($status, ['error', 'failed', 'failure', 'declined', 'rejected', 'cancelled'], true)
+            || in_array($apiStatus, ['error', 'failed', 'failure'], true)
+            || str_contains($messageText, 'invalid')
+            || str_contains($messageText, 'missing api key')
+            || str_contains($messageText, 'unauthor')
+            || str_contains($messageText, 'insufficient');
+
+        return $response->successful() && ! $looksError && ($looksAccepted || ($status === '' && $apiStatus !== 'error'));
     }
 
     private function buildJpesaXml(array $fields): string

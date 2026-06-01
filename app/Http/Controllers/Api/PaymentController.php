@@ -355,6 +355,19 @@ class PaymentController extends Controller
                 'txn_id'          => $txnId,
             ]);
 
+            if ($sub->payment) {
+                try {
+                    (new MobileMoneyService())->processAgentCommission($sub->payment->fresh(), $source);
+                } catch (\Throwable $e) {
+                    Log::error('Payment outcome: agent commission processing failed.', [
+                        'source'          => $source,
+                        'subscription_id' => $sub->id,
+                        'payment_id'      => $sub->payment->id,
+                        'error'           => $e->getMessage(),
+                    ]);
+                }
+            }
+
             return;
         }
 
