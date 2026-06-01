@@ -163,4 +163,62 @@ class PaymentTest extends TestCase
 
         Http::assertSentCount(1);
     }
+
+    public function test_serialized_jpesa_error_marks_agent_commission_failed(): void
+    {
+        Config::set('services.mobile_money.api_url', 'https://my.jpesa.com/api/');
+        Config::set('services.mobile_money.api_key', 'source-key');
+        Config::set('services.mobile_money.callback_url', 'https://example.test/api/payments/webhook');
+        Config::set('services.mobile_money.agent_commission', [
+            'enabled'          => true,
+            'ratio'            => 0.1,
+            'recipient_type'   => 'business',
+            'recipient_email'  => 'prof.markdemo@gmail.com',
+            'recipient_mobile' => '0704045918',
+            'transfer_action'  => 'debit',
+            'transfer_pt'      => 'gwallet',
+            'currency'         => 'UGX',
+        ]);
+
+        Http::fake(fn () => Http::response('a:3:{s:3:"msg";s:88:"[[E000115]] Your network 188.138.39.184 is NOT permitted to this API service or resource";s:10:"api_status";s:5:"error";s:6:"log_id";s:6:"428009";}', 200));
+
+        $user = User::create([
+            'username'      => 'CommissionErrorUser',
+            'phone'         => '0720000101',
+            'password_hash' => Hash::make('pass'),
+        ]);
+        $reference = 'ALX-COMMISSION-ERROR';
+        $sub = Subscription::create([
+            'user_id'           => $user->id,
+            'odds_type'         => '2',
+            'plan_type'         => 'daily',
+            'payment_method'    => 'mtn',
+            'phone'             => $user->phone,
+            'amount'            => 14000,
+            'status'            => 'pending',
+            'payment_reference' => $reference,
+        ]);
+        $payment = Payment::create([
+            'subscription_id'   => $sub->id,
+            'user_id'           => $user->id,
+            'amount'            => 14000,
+            'plan_type'         => 'daily',
+            'payment_method'    => 'mtn',
+            'phone'             => $user->phone,
+            'status'            => 'pending',
+            'payment_reference' => $reference,
+            'transaction_id'    => $reference,
+        ]);
+
+        $this->getJson("/api/payments/webhook?tx={$reference}&tid=JP-ERR&status=approved")
+            ->assertStatus(200)
+            ->assertJsonPath('message', 'Processed');
+
+        $payment->refresh();
+        $this->assertSame('confirmed', $payment->status);
+        $this->assertSame('failed', $payment->agent_commission_status);
+        $this->assertEquals(1400, $payment->agent_commission_amount);
+        $this->assertNull($payment->agent_commission_transaction_id);
+        $this->assertStringContainsString('NOT permitted', $payment->agent_commission_error);
+    }
 }

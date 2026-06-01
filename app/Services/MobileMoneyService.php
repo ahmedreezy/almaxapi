@@ -109,10 +109,7 @@ class MobileMoneyService
                 ->withBody($xml, 'text/xml')
                 ->post($apiUrl);
 
-            $json = json_decode((string) $response->body(), true);
-            if (! is_array($json)) {
-                $json = [];
-            }
+            $json = $this->decodeProviderResponse((string) $response->body());
             $status = strtolower((string) (
                 ($json['status'] ?? null)
                 ?? ($json['payment_status'] ?? null)
@@ -303,10 +300,7 @@ class MobileMoneyService
                 ->withBody($xml, 'text/xml')
                 ->post($apiUrl);
 
-            $json = json_decode((string) $response->body(), true);
-            if (! is_array($json)) {
-                $json = [];
-            }
+            $json = $this->decodeProviderResponse((string) $response->body());
 
             $status = strtolower((string) (
                 $json['status']         ??
@@ -562,12 +556,10 @@ class MobileMoneyService
                 ->withBody($xml, 'text/xml')
                 ->post($apiUrl);
 
-            $json = json_decode((string) $response->body(), true);
-            if (! is_array($json)) {
-                $json = [];
-            }
+            $rawBody = (string) $response->body();
+            $json = $this->decodeProviderResponse($rawBody);
 
-            $success = $this->providerResponseWasAccepted($response, $json);
+            $success = $this->providerResponseWasAccepted($response, $json, $rawBody);
             $transactionId = $json['tid']
                 ?? $json['transaction_id']
                 ?? $json['txn_id']
@@ -576,9 +568,9 @@ class MobileMoneyService
 
             return [
                 'success'        => $success,
-                'message'        => $json['message'] ?? $json['msg'] ?? ($success ? 'Transfer accepted.' : 'Transfer rejected by provider.'),
+                'message'        => $this->providerMessage($json) ?? ($success ? 'Transfer accepted.' : 'Transfer rejected by provider.'),
                 'transaction_id' => $transactionId,
-                'raw'            => $json ?: ['body' => $response->body()],
+                'raw'            => $json ?: ['body' => $rawBody],
             ];
         } catch (\Throwable $e) {
             Log::error('MobileMoneyService: JPesa internal transfer request failed.', [
@@ -644,7 +636,37 @@ class MobileMoneyService
         return $this->apiUrl;
     }
 
-    private function providerResponseWasAccepted($response, array $json): bool
+    private function decodeProviderResponse(string $body): array
+    {
+        $json = json_decode($body, true);
+        if (is_array($json)) {
+            return $json;
+        }
+
+        $serialized = @unserialize($body, ['allowed_classes' => false]);
+        if (is_array($serialized)) {
+            return $serialized;
+        }
+
+        parse_str($body, $parsed);
+        if (is_array($parsed) && count($parsed) > 0 && implode('', array_keys($parsed)) !== $body) {
+            return $parsed;
+        }
+
+        return [];
+    }
+
+    private function providerMessage(array $json): ?string
+    {
+        $message = $json['message']
+            ?? $json['msg']
+            ?? $json['error']
+            ?? null;
+
+        return $message !== null ? (string) $message : null;
+    }
+
+    private function providerResponseWasAccepted($response, array $json, string $body = ''): bool
     {
         $status = strtolower((string) (
             ($json['status'] ?? null)
@@ -654,7 +676,8 @@ class MobileMoneyService
             ?? ''
         ));
         $apiStatus = strtolower((string) (($json['api_status'] ?? $json['apiStatus'] ?? '')));
-        $messageText = strtolower((string) ($json['message'] ?? $json['msg'] ?? ''));
+        $messageText = strtolower((string) ($this->providerMessage($json) ?? ''));
+        $bodyText = strtolower($body);
 
         $looksAccepted = in_array($status, ['success', 'successful', 'accepted', 'pending', 'processing', 'queued', 'approved', 'ok', 'completed'], true)
             || in_array($apiStatus, ['success', 'successful', 'accepted', 'ok'], true);
@@ -663,9 +686,14 @@ class MobileMoneyService
             || str_contains($messageText, 'invalid')
             || str_contains($messageText, 'missing api key')
             || str_contains($messageText, 'unauthor')
-            || str_contains($messageText, 'insufficient');
+            || str_contains($messageText, 'insufficient')
+            || str_contains($messageText, 'not permitted')
+            || str_contains($messageText, 'not allowed')
+            || str_contains($bodyText, 'api_status";s:5:"error')
+            || str_contains($bodyText, '"api_status":"error"')
+            || str_contains($bodyText, 'not permitted to this api');
 
-        return $response->successful() && ! $looksError && ($looksAccepted || ($status === '' && $apiStatus !== 'error'));
+        return $response->successful() && ! $looksError && ($looksAccepted || (! empty($json) && $status === '' && $apiStatus !== 'error'));
     }
 
     private function buildJpesaXml(array $fields): string
