@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\RecentWinController;
 use App\Http\Controllers\Api\TestimonialController;
 use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\DeveloperAnalyticsController;
 use App\Http\Controllers\Api\WebhookController;
 
 /*
@@ -28,6 +29,10 @@ use App\Http\Controllers\Api\WebhookController;
 
 // ─── Health check ──────────────────────────────────────────────────────────
 Route::get('/health', fn () => response()->json(['status' => 'ok', 'timestamp' => now()->toISOString()]));
+
+// ─── Developer analytics (role:developer only) ────────────────────────────
+Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'])
+    ->middleware('auth.dev');
 
 // ─── GitHub deployment webhook (no auth, HMAC-verified inside controller) ──
 Route::post('/webhook/github', [WebhookController::class, 'github'])

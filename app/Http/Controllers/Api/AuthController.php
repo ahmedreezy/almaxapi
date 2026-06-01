@@ -46,7 +46,11 @@ class AuthController extends Controller
         }
 
         try {
-            $token = $admin->createToken('admin-token', ['role:admin']);
+            // Issue ability based on the user's role:
+            //   owner     → role:admin     (accesses /admin/dashboard)
+            //   developer → role:developer  (accesses /dev/dashboard)
+            $ability = ($admin->role ?? 'owner') === 'developer' ? 'role:developer' : 'role:admin';
+            $token = $admin->createToken('admin-token', [$ability]);
         } catch (QueryException $e) {
             if ($this->isTokenStorageFailure($e)) {
                 return response()->json([
@@ -63,6 +67,7 @@ class AuthController extends Controller
             'admin' => [
                 'id'       => $admin->id,
                 'username' => $admin->username,
+                'role'     => $admin->role ?? 'owner',
             ],
         ]);
     }

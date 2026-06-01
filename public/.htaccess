@@ -6,9 +6,11 @@
     RewriteEngine On
 
     # Canonical host + HTTPS for production domain.
+    # R=308 preserves the request method (POST stays POST) — R=301 would
+    # cause browsers to downgrade POST to GET, resulting in 405 on API routes.
     RewriteCond %{HTTP_HOST} ^www\.almaxpredictions\.com$ [NC,OR]
     RewriteCond %{HTTPS} !=on
-    RewriteRule ^ https://almaxpredictions.com%{REQUEST_URI} [L,R=301]
+    RewriteRule ^ https://almaxpredictions.com%{REQUEST_URI} [L,R=308]
 
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
