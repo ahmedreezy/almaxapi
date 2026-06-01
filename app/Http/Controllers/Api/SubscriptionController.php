@@ -287,6 +287,8 @@ class SubscriptionController extends Controller
             'subscription_id' => $sub->id,
             'txn_id'          => $txnId,
         ]);
+
+        $this->processAgentCommissionSafely($sub, 'provider-query');
     }
 
     /** Normalise a Subscription model to a camelCase array for API responses. */
@@ -463,11 +465,31 @@ class SubscriptionController extends Controller
             'txn_id'          => $txnId,
         ]);
 
+        $this->processAgentCommissionSafely($sub, 'user-submitted-transaction');
+
         return response()->json([
             'verified'     => true,
             'message'      => 'Payment verified! Your subscription is now active.',
             'subscription' => $this->formatSub($sub->fresh()->load(['group']), true),
         ]);
+    }
+
+    private function processAgentCommissionSafely(Subscription $sub, string $source): void
+    {
+        if (! $sub->payment) {
+            return;
+        }
+
+        try {
+            (new MobileMoneyService())->processAgentCommission($sub->payment->fresh(), $source);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Subscription activation: agent commission processing failed.', [
+                'source'          => $source,
+                'subscription_id' => $sub->id,
+                'payment_id'      => $sub->payment->id,
+                'error'           => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
