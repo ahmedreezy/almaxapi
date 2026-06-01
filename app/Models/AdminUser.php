@@ -26,7 +26,7 @@ class AdminUser extends Authenticatable
     public $timestamps = false;
     const CREATED_AT = 'created_at';
 
-    protected $fillable = ['username', 'password_hash'];
+    protected $fillable = ['username', 'role', 'password_hash'];
 
     protected $hidden = ['password_hash'];
 
