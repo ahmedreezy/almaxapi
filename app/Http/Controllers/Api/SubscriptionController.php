@@ -29,9 +29,9 @@ class SubscriptionController extends Controller
         // Auto-delete stale pending/failed subs whose booking deadline has passed
         $this->cleanupDeadlineSubscriptions();
 
-        // Timeout pending subscriptions that have been waiting more than 10 minutes
+        // Timeout pending subscriptions that have been waiting more than 1 hour
         $stalePendingIds = Subscription::where('status', 'pending')
-            ->where('created_at', '<', now()->subMinutes(10))
+            ->where('created_at', '<', now()->subHour())
             ->pluck('id');
         if ($stalePendingIds->isNotEmpty()) {
             Payment::whereIn('subscription_id', $stalePendingIds)
@@ -88,12 +88,12 @@ class SubscriptionController extends Controller
             'phone'         => ['required', 'string', 'max:30'],
         ]);
 
-        // Fail any pending records for this user+group older than 10 minutes so they don't stack
+        // Fail any pending records for this user+group older than 1 hour so they don't stack
         $stale = Subscription::with('payment')
             ->where('user_id', $data['userId'])
             ->where('group_id', $data['groupId'])
             ->where('status', 'pending')
-            ->where('created_at', '<', now()->subMinutes(10))
+            ->where('created_at', '<', now()->subHour())
             ->get();
         foreach ($stale as $staleSub) {
             DB::transaction(function () use ($staleSub) {

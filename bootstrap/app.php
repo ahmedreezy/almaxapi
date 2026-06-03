@@ -20,6 +20,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'auth.admin' => \App\Http\Middleware\EnsureAdminToken::class,
             'auth.user'  => \App\Http\Middleware\EnsureUserToken::class,
+            'auth.dev'   => \App\Http\Middleware\EnsureDevToken::class,
         ]);
 
         // Security headers on every response
