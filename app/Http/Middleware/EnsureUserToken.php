@@ -47,7 +47,13 @@ class EnsureUserToken
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
-        $request->setUserResolver(fn () => $pat->tokenable);
+        $user = $pat->tokenable;
+        if ($user?->blacklisted) {
+            $pat->delete();
+            return response()->json(['error' => 'Blacklisted'], 403);
+        }
+
+        $request->setUserResolver(fn () => $user);
         $pat->forceFill(['last_used_at' => now()])->save();
 
         return $next($request);

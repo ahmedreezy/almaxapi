@@ -172,6 +172,71 @@ class UserTest extends TestCase
             ->assertStatus(403);
     }
 
+    public function test_admin_can_toggle_scam_warning_and_blacklist(): void
+    {
+        $ctx = $this->createAdmin();
+        $user = User::create([
+            'username'      => 'Risky',
+            'phone'         => '0700888001',
+            'password_hash' => Hash::make('password123'),
+        ]);
+
+        $this->withHeaders($ctx['headers'])
+            ->patchJson("/api/users/{$user->id}", [
+                'scam_warning' => true,
+                'blacklisted'  => true,
+            ])
+            ->assertStatus(200)
+            ->assertJsonPath('scam_warning', true)
+            ->assertJsonPath('blacklisted', true);
+
+        $this->assertDatabaseHas('users', [
+            'id'           => $user->id,
+            'scam_warning' => true,
+            'blacklisted'  => true,
+        ]);
+        $this->assertNotNull($user->fresh()->blacklisted_at);
+
+        $this->withHeaders($ctx['headers'])
+            ->patchJson("/api/users/{$user->id}", [
+                'scam_warning' => false,
+                'blacklisted'  => false,
+            ])
+            ->assertStatus(200)
+            ->assertJsonPath('scam_warning', false)
+            ->assertJsonPath('blacklisted', false);
+
+        $this->assertNull($user->fresh()->blacklisted_at);
+    }
+
+    public function test_blacklisted_user_cannot_login_until_unblacklisted(): void
+    {
+        $ctx = $this->createAdmin();
+        $user = User::create([
+            'username'      => 'Blocked',
+            'phone'         => '0700888002',
+            'password_hash' => Hash::make('password123'),
+        ]);
+
+        $this->withHeaders($ctx['headers'])
+            ->patchJson("/api/users/{$user->id}", ['blacklisted' => true])
+            ->assertStatus(200);
+
+        $this->postJson('/api/users/login', [
+            'phone'    => '0700888002',
+            'password' => 'password123',
+        ])->assertStatus(403);
+
+        $this->withHeaders($ctx['headers'])
+            ->patchJson("/api/users/{$user->id}", ['blacklisted' => false])
+            ->assertStatus(200);
+
+        $this->postJson('/api/users/login', [
+            'phone'    => '0700888002',
+            'password' => 'password123',
+        ])->assertStatus(200);
+    }
+
     // ─── bcrypt $2b$ compatibility ───────────────────────────────────────
 
     public function test_existing_nodejs_bcryptjs_hashes_are_compatible(): void

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Group;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 /**
  * GET    /api/groups          — public:  active groups only (special hidden until priced)
@@ -70,6 +71,12 @@ class GroupController extends Controller
             $photoUrl = $this->storeUpload($request->file('photo'), 'groups');
         }
 
+        if (! empty($data['subscription_deadline']) && Group::isDeadlinePastOrCurrent((string) $data['subscription_deadline'])) {
+            throw ValidationException::withMessages([
+                'subscription_deadline' => ['The deadline must be a future date and time.'],
+            ]);
+        }
+
         $group = Group::create(array_merge([
             'betslip_link' => '',
             'betslip_code' => '',
@@ -106,6 +113,23 @@ class GroupController extends Controller
         unset($data['clear_photo']);
 
         $group = Group::findOrFail($id);
+
+        $candidateDeadline = $request->has('subscription_deadline')
+            ? ($request->input('subscription_deadline') ?: null)
+            : $group->subscription_deadline;
+        $finalIsActive = $request->has('is_active')
+            ? $request->boolean('is_active')
+            : (bool) $group->is_active;
+        $isActivationAttempt = $request->has('is_active') && $request->boolean('is_active') === true;
+        $isDeadlineUpdateWhileActive = $request->has('subscription_deadline') && $finalIsActive;
+
+        if (($isActivationAttempt || $isDeadlineUpdateWhileActive)
+            && Group::isDeadlinePastOrCurrent($candidateDeadline)
+        ) {
+            throw ValidationException::withMessages([
+                'subscription_deadline' => ['The deadline must be a future date and time before activating this package.'],
+            ]);
+        }
 
         if ($request->hasFile('photo')) {
             $this->deleteUpload($group->photo_url);
@@ -196,11 +220,6 @@ class GroupController extends Controller
 
                 if (! Group::deadlineAt((string) $value)) {
                     $fail('The deadline must be a valid date and time.');
-                    return;
-                }
-
-                if (Group::isDeadlinePastOrCurrent((string) $value)) {
-                    $fail('The deadline must be a future date and time.');
                 }
             },
         ];

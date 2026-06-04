@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Group;
 use App\Models\Payment;
 use App\Models\Subscription;
+use App\Models\User;
 use App\Services\MobileMoneyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -87,6 +88,14 @@ class SubscriptionController extends Controller
             'paymentMethod' => ['required', 'string', 'in:mtn,airtel'],
             'phone'         => ['required', 'string', 'max:30'],
         ]);
+
+        $user = User::findOrFail($data['userId']);
+        if ($user->blacklisted) {
+            return response()->json([
+                'error'   => 'Blacklisted',
+                'message' => 'This phone number has been blacklisted.',
+            ], 403);
+        }
 
         // Fail any pending records for this user+group older than 1 hour so they don't stack
         $stale = Subscription::with('payment')
@@ -352,6 +361,8 @@ class SubscriptionController extends Controller
             if ($sub->payment) {
                 $sub->payment->update(['status' => 'confirmed']);
             }
+
+            $this->processAgentCommissionSafely($sub->fresh(['payment']), 'admin-activation');
         } elseif (($data['status'] ?? null) === 'rejected') {
             $sub->update([
                 'status'           => 'rejected',
