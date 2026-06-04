@@ -15,9 +15,14 @@ class User extends Authenticatable
     public $timestamps = false;
     const CREATED_AT = "created_at";
 
-    protected $fillable = ["username", "phone", "password_hash"];
+    protected $fillable = ["username", "phone", "password_hash", "scam_warning", "blacklisted", "blacklisted_at"];
     protected $hidden = ["password_hash"];
-    protected $casts = ['created_at' => 'datetime'];
+    protected $casts = [
+        'created_at'     => 'datetime',
+        'scam_warning'   => 'boolean',
+        'blacklisted'    => 'boolean',
+        'blacklisted_at' => 'datetime',
+    ];
 
     public function getAuthPassword(): string
     {

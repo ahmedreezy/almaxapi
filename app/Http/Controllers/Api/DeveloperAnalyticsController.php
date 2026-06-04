@@ -16,6 +16,28 @@ use Illuminate\Support\Facades\DB;
  */
 class DeveloperAnalyticsController extends Controller
 {
+    private function trackedCommissionBase()
+    {
+        return DB::table('payments')
+            ->where('status', 'confirmed')
+            ->whereNotNull('agent_commission_amount')
+            ->where('agent_commission_amount', '>', 0)
+            ->where(function ($query) {
+                $query->whereNull('agent_commission_status')
+                    ->orWhere('agent_commission_status', '')
+                    ->orWhereNotIn('agent_commission_status', ['failed']);
+            });
+    }
+
+    private function normaliseCommissionStatus(?string $status): string
+    {
+        return match (strtolower(trim((string) $status))) {
+            'sent', 'completed' => 'completed',
+            'processing'        => 'processing',
+            default             => 'pending',
+        };
+    }
+
     public function index(): JsonResponse
     {
         $now        = now();
@@ -63,56 +85,58 @@ class DeveloperAnalyticsController extends Controller
             ->pluck('total', 'payment_method');
 
         // ── Commission ─────────────────────────────────────────────────────
-        $commByStatus = DB::table('payments')
-            ->select(
-                'agent_commission_status',
-                DB::raw('COUNT(*) as cnt'),
-                DB::raw('COALESCE(SUM(agent_commission_amount), 0) as total')
-            )
-            ->whereNotNull('agent_commission_status')
-            ->where('agent_commission_status', '!=', '')
-            ->groupBy('agent_commission_status')
-            ->get()
-            ->keyBy('agent_commission_status');
-
-        $totalEarned = (float) DB::table('payments')
-            ->whereNotNull('agent_commission_amount')
-            ->sum('agent_commission_amount');
-
-        $totalPaid = (float) DB::table('payments')
-            ->where('agent_commission_status', 'completed')
-            ->sum('agent_commission_amount');
-
-        $commByPlan = DB::table('payments')
-            ->select('plan_type', DB::raw('COALESCE(SUM(agent_commission_amount), 0) as total'))
-            ->whereNotNull('agent_commission_amount')
-            ->whereNotNull('plan_type')
-            ->groupBy('plan_type')
-            ->pluck('total', 'plan_type');
-
-        $commByMethod = DB::table('payments')
-            ->select('payment_method', DB::raw('COALESCE(SUM(agent_commission_amount), 0) as total'))
-            ->whereNotNull('agent_commission_amount')
-            ->whereNotNull('payment_method')
-            ->groupBy('payment_method')
-            ->pluck('total', 'payment_method');
-
-        // Commission ratio (read from latest stored value, fall back to env default)
-        $commRatio = (float) (
-            DB::table('payments')->whereNotNull('agent_commission_ratio')->value('agent_commission_ratio')
-            ?? config('services.mobile_money.agent_commission.ratio', 0.1)
-        );
-
-        $recentComm = DB::table('payments')
-            ->whereNotNull('agent_commission_amount')
+        $trackedCommissionRows = $this->trackedCommissionBase()
             ->orderByDesc('created_at')
-            ->limit(25)
             ->get([
                 'id', 'amount', 'plan_type', 'payment_method',
                 'agent_commission_amount', 'agent_commission_status',
                 'agent_commission_reference', 'agent_commission_processed_at',
-                'created_at',
+                'agent_commission_ratio', 'created_at',
             ]);
+
+        $totalEarned = (float) $trackedCommissionRows->sum('agent_commission_amount');
+
+        $totalPaid = (float) $trackedCommissionRows
+            ->filter(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status) === 'completed')
+            ->sum('agent_commission_amount');
+
+        $commByStatus = $trackedCommissionRows
+            ->groupBy(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status))
+            ->map(fn ($rows) => [
+                'count'  => $rows->count(),
+                'amount' => (float) $rows->sum('agent_commission_amount'),
+            ]);
+
+        $commByStatus = collect([
+            'completed'  => ['count' => 0, 'amount' => 0.0],
+            'processing' => ['count' => 0, 'amount' => 0.0],
+            'pending'    => ['count' => 0, 'amount' => 0.0],
+            'failed'     => ['count' => 0, 'amount' => 0.0],
+        ])->merge($commByStatus);
+
+        $commByPlan = $trackedCommissionRows
+            ->filter(fn ($row) => ! empty($row->plan_type))
+            ->groupBy('plan_type')
+            ->map(fn ($rows) => (float) $rows->sum('agent_commission_amount'));
+
+        $commByMethod = $trackedCommissionRows
+            ->filter(fn ($row) => ! empty($row->payment_method))
+            ->groupBy('payment_method')
+            ->map(fn ($rows) => (float) $rows->sum('agent_commission_amount'));
+
+        // Commission ratio (read from latest stored value, fall back to env default)
+        $commRatio = (float) (
+            $trackedCommissionRows->first(fn ($row) => $row->agent_commission_ratio !== null)?->agent_commission_ratio
+            ?? config('services.mobile_money.agent_commission.ratio', 0.1)
+        );
+
+        $recentComm = $trackedCommissionRows
+            ->take(25)
+            ->map(function ($row) {
+                $row->agent_commission_status = $this->normaliseCommissionStatus($row->agent_commission_status);
+                return $row;
+            })
+            ->values();
 
         // ── Users ──────────────────────────────────────────────────────────
         $totalUsers  = (int) DB::table('users')->count();
@@ -176,11 +200,8 @@ class DeveloperAnalyticsController extends Controller
                 'ratio'        => $commRatio ?: 0.1,
                 'total_earned' => $totalEarned,
                 'total_paid'   => $totalPaid,
-                'outstanding'  => $totalEarned - $totalPaid,
-                'by_status'    => $commByStatus->map(fn ($r) => [
-                    'count'  => (int) $r->cnt,
-                    'amount' => (float) $r->total,
-                ]),
+                'outstanding'  => max(0, $totalEarned - $totalPaid),
+                'by_status'    => $commByStatus,
                 'by_plan'   => $commByPlan,
                 'by_method' => $commByMethod,
                 'recent'    => $recentComm,

@@ -94,6 +94,13 @@ class UserController extends Controller
 
         $user = User::where('phone', $data['phone'])->first();
 
+        if ($user?->blacklisted) {
+            return response()->json([
+                'error'   => 'Blacklisted',
+                'message' => 'This phone number has been blacklisted.',
+            ], 403);
+        }
+
         // Use PHP's native password_verify() instead of Hash::check() because
         // existing users have $2b$ prefix hashes from Node.js bcryptjs.
         // Laravel's BcryptHasher::check() rejects $2b$ (only accepts $2y$/$2a$),
@@ -143,7 +150,50 @@ class UserController extends Controller
             return response()->json(['error' => 'User not found'], 404);
         }
 
+        if ($user->blacklisted) {
+            return response()->json([
+                'error'   => 'Blacklisted',
+                'message' => 'This phone number has been blacklisted.',
+            ], 403);
+        }
+
         return response()->json($user);
+    }
+
+    /** Admin: mark warning badge / blacklist state. Both actions are reversible. */
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $data = $request->validate([
+            'scam_warning' => ['sometimes', 'boolean'],
+            'blacklisted'  => ['sometimes', 'boolean'],
+        ]);
+
+        if (! $request->hasAny(['scam_warning', 'blacklisted'])) {
+            return response()->json(['error' => 'No fields to update'], 400);
+        }
+
+        $user = User::findOrFail($id);
+        $updates = [];
+
+        if ($request->has('scam_warning')) {
+            $updates['scam_warning'] = $request->boolean('scam_warning');
+        }
+
+        if ($request->has('blacklisted')) {
+            $blacklisted = $request->boolean('blacklisted');
+            $updates['blacklisted'] = $blacklisted;
+            $updates['blacklisted_at'] = $blacklisted
+                ? ($user->blacklisted_at ?? now())
+                : null;
+        }
+
+        $user->update($updates);
+
+        if (($updates['blacklisted'] ?? false) === true) {
+            $user->tokens()->delete();
+        }
+
+        return response()->json($user->fresh()->load(['subscriptions']));
     }
 
     /** Admin: hard-delete user (subscriptions cascade via FK) */

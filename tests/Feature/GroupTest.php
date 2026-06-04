@@ -362,6 +362,38 @@ class GroupTest extends TestCase
             ->assertJsonPath('specialPrice', null);
     }
 
+    public function test_admin_can_deactivate_package_with_past_deadline(): void
+    {
+        $admin = $this->createAdmin();
+        $group = $this->makeGroup([
+            'is_active' => true,
+            'subscription_deadline' => now()->subDay()->format('Y-m-d\TH:i'),
+        ]);
+
+        $this->withHeaders($admin['headers'])
+            ->patchJson("/api/groups/{$group->id}", ['is_active' => false])
+            ->assertStatus(200)
+            ->assertJsonPath('isActive', false);
+
+        $this->assertDatabaseHas('groups', ['id' => $group->id, 'is_active' => false]);
+    }
+
+    public function test_admin_cannot_activate_package_with_past_deadline(): void
+    {
+        $admin = $this->createAdmin();
+        $group = $this->makeGroup([
+            'is_active' => false,
+            'subscription_deadline' => now()->subDay()->format('Y-m-d\TH:i'),
+        ]);
+
+        $this->withHeaders($admin['headers'])
+            ->patchJson("/api/groups/{$group->id}", ['is_active' => true])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('subscription_deadline');
+
+        $this->assertDatabaseHas('groups', ['id' => $group->id, 'is_active' => false]);
+    }
+
     public function test_admin_can_update_betslip(): void
     {
         $admin = $this->createAdmin();

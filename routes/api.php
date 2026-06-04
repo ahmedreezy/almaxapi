@@ -58,6 +58,8 @@ Route::prefix('users')->group(function () {
     // Admin
     Route::get('/', [UserController::class, 'index'])
         ->middleware('auth.admin');
+    Route::patch('/{id}', [UserController::class, 'update'])
+        ->middleware('auth.admin');
     Route::delete('/{id}', [UserController::class, 'destroy'])
         ->middleware('auth.admin');
 });

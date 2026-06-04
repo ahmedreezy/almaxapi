@@ -190,6 +190,18 @@ class SubscriptionTest extends TestCase
             ->assertJsonPath('message', 'This package is currently unavailable.');
     }
 
+    public function test_blacklisted_user_cannot_create_subscription(): void
+    {
+        $ctx = $this->createUser('0711000071');
+        $ctx['user']->update(['blacklisted' => true, 'blacklisted_at' => now()]);
+        $group = $this->makeGroup(['is_active' => true]);
+
+        $this->postJson('/api/subscriptions',
+            $this->subBody($ctx['user']->id, $group->id, '0711000071'))
+            ->assertStatus(403)
+            ->assertJsonPath('error', 'Blacklisted');
+    }
+
     public function test_subscription_validates_required_fields(): void
     {
         // Missing all fields → 422
