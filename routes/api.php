@@ -33,6 +33,8 @@ Route::get('/health', fn () => response()->json(['status' => 'ok', 'timestamp' =
 // ─── Developer analytics (role:developer only) ────────────────────────────
 Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'])
     ->middleware('auth.dev');
+Route::post('/analytics/developer/payments/{payment}/retry-commission', [DeveloperAnalyticsController::class, 'retryCommission'])
+    ->middleware('auth.dev');
 
 // ─── GitHub deployment webhook (no auth, HMAC-verified inside controller) ──
 Route::post('/webhook/github', [WebhookController::class, 'github'])
