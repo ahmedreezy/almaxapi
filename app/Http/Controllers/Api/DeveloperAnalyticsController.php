@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Payment;
+use App\Services\MobileMoneyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
@@ -21,12 +23,7 @@ class DeveloperAnalyticsController extends Controller
         return DB::table('payments')
             ->where('status', 'confirmed')
             ->whereNotNull('agent_commission_amount')
-            ->where('agent_commission_amount', '>', 0)
-            ->where(function ($query) {
-                $query->whereNull('agent_commission_status')
-                    ->orWhere('agent_commission_status', '')
-                    ->orWhereNotIn('agent_commission_status', ['failed']);
-            });
+            ->where('agent_commission_amount', '>', 0);
     }
 
     private function normaliseCommissionStatus(?string $status): string
@@ -34,6 +31,7 @@ class DeveloperAnalyticsController extends Controller
         return match (strtolower(trim((string) $status))) {
             'sent', 'completed' => 'completed',
             'processing'        => 'processing',
+            'failed', 'failure', 'error' => 'failed',
             default             => 'pending',
         };
     }
@@ -91,7 +89,7 @@ class DeveloperAnalyticsController extends Controller
                 'id', 'amount', 'plan_type', 'payment_method',
                 'agent_commission_amount', 'agent_commission_status',
                 'agent_commission_reference', 'agent_commission_processed_at',
-                'agent_commission_ratio', 'created_at',
+                'agent_commission_ratio', 'agent_commission_error', 'created_at',
             ]);
 
         $totalEarned = (float) $trackedCommissionRows->sum('agent_commission_amount');
@@ -225,5 +223,56 @@ class DeveloperAnalyticsController extends Controller
                 'signups' => $signupsChart,
             ],
         ]);
+    }
+
+    public function retryCommission(Payment $payment): JsonResponse
+    {
+        $payment->refresh();
+
+        if ($payment->status !== 'confirmed') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only confirmed payments can have commission retried.',
+            ], 409);
+        }
+
+        $currentStatus = $this->normaliseCommissionStatus($payment->agent_commission_status);
+        if (in_array($currentStatus, ['completed', 'processing'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Commission is already paid or currently processing.',
+                'payment' => $this->serialiseCommissionPayment($payment),
+            ], 409);
+        }
+
+        $result = (new MobileMoneyService())->processAgentCommission($payment, 'developer-retry');
+        $payment->refresh();
+
+        return response()->json([
+            'success' => (bool) ($result['success'] ?? false),
+            'message' => $result['message'] ?? 'Commission retry completed.',
+            'payment' => $this->serialiseCommissionPayment($payment),
+        ]);
+    }
+
+    private function serialiseCommissionPayment(Payment $payment): array
+    {
+        return [
+            'id' => $payment->id,
+            'amount' => (float) $payment->amount,
+            'plan_type' => $payment->plan_type,
+            'payment_method' => $payment->payment_method,
+            'agent_commission_amount' => $payment->agent_commission_amount !== null
+                ? (float) $payment->agent_commission_amount
+                : null,
+            'agent_commission_status' => $this->normaliseCommissionStatus($payment->agent_commission_status),
+            'agent_commission_reference' => $payment->agent_commission_reference,
+            'agent_commission_processed_at' => $payment->agent_commission_processed_at,
+            'agent_commission_ratio' => $payment->agent_commission_ratio !== null
+                ? (float) $payment->agent_commission_ratio
+                : null,
+            'agent_commission_error' => $payment->agent_commission_error,
+            'created_at' => $payment->created_at,
+        ];
     }
 }

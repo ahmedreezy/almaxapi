@@ -420,7 +420,7 @@ class MobileMoneyService
             ->where(function ($query) {
                 $query->whereNull('agent_commission_status')
                     ->orWhere('agent_commission_status', '')
-                    ->orWhere('agent_commission_status', 'failed');
+                    ->orWhereIn('agent_commission_status', ['failed', 'failure', 'error', 'pending', 'queued']);
             })
             ->update([
                 'agent_commission_amount'       => $commissionAmount,
