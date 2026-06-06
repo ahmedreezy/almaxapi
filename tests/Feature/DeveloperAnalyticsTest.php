@@ -122,6 +122,75 @@ class DeveloperAnalyticsTest extends TestCase
             ->assertStatus(403);
     }
 
+    public function test_developer_can_record_jpesa_withdrawal_and_available_commission_updates(): void
+    {
+        Config::set('services.mobile_money.agent_commission.enabled', true);
+        Config::set('services.mobile_money.agent_commission.ratio', 0.1);
+        Config::set('services.mobile_money.agent_commission.recipient_type', 'business');
+        Config::set('services.mobile_money.agent_commission.recipient_email', 'prof.markdemo@gmail.com');
+
+        $user = User::create([
+            'username'      => 'Withdrawal Commission Member',
+            'phone'         => '0700777003',
+            'password_hash' => Hash::make('password123'),
+        ]);
+
+        $sub = Subscription::create([
+            'user_id'        => $user->id,
+            'odds_type'      => '2',
+            'plan_type'      => 'weekly',
+            'payment_method' => 'mtn',
+            'phone'          => $user->phone,
+            'amount'         => 50000,
+            'status'         => 'active',
+        ]);
+
+        Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $user->id,
+            'amount' => 50000,
+            'plan_type' => 'weekly',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'status' => 'confirmed',
+            'agent_commission_amount' => 5000,
+            'agent_commission_ratio' => 0.1,
+            'agent_commission_status' => 'sent',
+        ]);
+
+        $headers = $this->developerHeaders();
+
+        $this->withHeaders($headers)
+            ->postJson('/api/analytics/developer/commission-withdrawals', [
+                'amount' => 2000,
+                'reference' => 'JPESA-WD-001',
+                'withdrawn_at' => now()->toDateString(),
+            ])
+            ->assertStatus(201)
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('commission.wallet_received', 5000)
+            ->assertJsonPath('commission.total_withdrawn', 2000)
+            ->assertJsonPath('commission.available', 3000);
+
+        $this->assertDatabaseHas('commission_withdrawals', [
+            'reference' => 'JPESA-WD-001',
+            'wallet_account' => 'prof.markdemo@gmail.com',
+        ]);
+
+        $this->withHeaders($headers)
+            ->getJson('/api/analytics/developer')
+            ->assertStatus(200)
+            ->assertJsonPath('commission.total_earned', 5000)
+            ->assertJsonPath('commission.overall_total', 5000)
+            ->assertJsonPath('commission.total_paid', 5000)
+            ->assertJsonPath('commission.wallet_received', 5000)
+            ->assertJsonPath('commission.total_withdrawn', 2000)
+            ->assertJsonPath('commission.available', 3000)
+            ->assertJsonPath('commission.current_total', 3000)
+            ->assertJsonPath('commission.wallet_account', 'prof.markdemo@gmail.com')
+            ->assertJsonCount(1, 'commission.withdrawals');
+    }
+
     public function test_developer_can_retry_failed_agent_commission(): void
     {
         Config::set('services.mobile_money.api_url', 'https://my.jpesa.com/api/');
