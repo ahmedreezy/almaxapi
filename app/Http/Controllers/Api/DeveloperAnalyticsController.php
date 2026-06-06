@@ -6,7 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Services\MobileMoneyService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Developer-only analytics dashboard data.
@@ -34,6 +38,51 @@ class DeveloperAnalyticsController extends Controller
             'failed', 'failure', 'error' => 'failed',
             default             => 'pending',
         };
+    }
+
+    private function commissionWalletAccount(): string
+    {
+        $commission = config('services.mobile_money.agent_commission', []);
+        $recipientType = strtolower((string) ($commission['recipient_type'] ?? 'business'));
+        $email = trim((string) ($commission['recipient_email'] ?? ''));
+        $mobile = trim((string) ($commission['recipient_mobile'] ?? ''));
+
+        return $recipientType === 'mobile'
+            ? ($mobile ?: $email)
+            : ($email ?: $mobile);
+    }
+
+    private function commissionWalletReceived(): float
+    {
+        return (float) $this->trackedCommissionBase()
+            ->get(['agent_commission_amount', 'agent_commission_status'])
+            ->filter(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status) === 'completed')
+            ->sum('agent_commission_amount');
+    }
+
+    private function commissionWithdrawals()
+    {
+        if (! Schema::hasTable('commission_withdrawals')) {
+            return collect();
+        }
+
+        return DB::table('commission_withdrawals')
+            ->orderByDesc('withdrawn_at')
+            ->orderByDesc('id')
+            ->get(['id', 'amount', 'reference', 'wallet_account', 'note', 'withdrawn_at', 'created_at']);
+    }
+
+    private function serialiseCommissionWithdrawal(object $withdrawal): array
+    {
+        return [
+            'id'             => $withdrawal->id,
+            'amount'         => (float) $withdrawal->amount,
+            'reference'      => $withdrawal->reference,
+            'wallet_account' => $withdrawal->wallet_account,
+            'note'           => $withdrawal->note,
+            'withdrawn_at'   => $withdrawal->withdrawn_at,
+            'created_at'     => $withdrawal->created_at,
+        ];
     }
 
     public function index(): JsonResponse
@@ -97,6 +146,10 @@ class DeveloperAnalyticsController extends Controller
         $totalPaid = (float) $trackedCommissionRows
             ->filter(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status) === 'completed')
             ->sum('agent_commission_amount');
+
+        $commissionWithdrawals = $this->commissionWithdrawals();
+        $totalWithdrawn = (float) $commissionWithdrawals->sum('amount');
+        $availableCommission = max(0, $totalPaid - $totalWithdrawn);
 
         $commByStatus = $trackedCommissionRows
             ->groupBy(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status))
@@ -194,15 +247,25 @@ class DeveloperAnalyticsController extends Controller
                 ]),
             ],
             'commission' => [
-                'enabled'      => (bool) config('services.mobile_money.agent_commission.enabled', false),
-                'ratio'        => $commRatio ?: 0.1,
-                'total_earned' => $totalEarned,
-                'total_paid'   => $totalPaid,
-                'outstanding'  => max(0, $totalEarned - $totalPaid),
-                'by_status'    => $commByStatus,
-                'by_plan'   => $commByPlan,
-                'by_method' => $commByMethod,
-                'recent'    => $recentComm,
+                'enabled'         => (bool) config('services.mobile_money.agent_commission.enabled', false),
+                'ratio'           => $commRatio ?: 0.1,
+                'wallet_account'  => $this->commissionWalletAccount(),
+                'total_earned'    => $totalEarned,
+                'overall_total'   => $totalEarned,
+                'total_paid'      => $totalPaid,
+                'wallet_received' => $totalPaid,
+                'total_withdrawn' => $totalWithdrawn,
+                'available'       => $availableCommission,
+                'current_total'   => $availableCommission,
+                'outstanding'     => max(0, $totalEarned - $totalPaid),
+                'by_status'       => $commByStatus,
+                'by_plan'         => $commByPlan,
+                'by_method'       => $commByMethod,
+                'recent'          => $recentComm,
+                'withdrawals'     => $commissionWithdrawals
+                    ->take(10)
+                    ->map(fn ($row) => $this->serialiseCommissionWithdrawal($row))
+                    ->values(),
             ],
             'users' => [
                 'total'          => $totalUsers,
@@ -223,6 +286,63 @@ class DeveloperAnalyticsController extends Controller
                 'signups' => $signupsChart,
             ],
         ]);
+    }
+
+    public function storeCommissionWithdrawal(Request $request): JsonResponse
+    {
+        if (! Schema::hasTable('commission_withdrawals')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Commission withdrawals table is not ready. Run database migrations first.',
+            ], 503);
+        }
+
+        $validated = $request->validate([
+            'amount'       => ['required', 'numeric', 'min:1'],
+            'reference'    => ['nullable', 'string', 'max:200'],
+            'note'         => ['nullable', 'string', 'max:1000'],
+            'withdrawn_at' => ['nullable', 'date', 'before_or_equal:now'],
+        ]);
+
+        $amount = round((float) $validated['amount'], 2);
+        $walletReceived = $this->commissionWalletReceived();
+        $alreadyWithdrawn = (float) DB::table('commission_withdrawals')->sum('amount');
+        $available = max(0, $walletReceived - $alreadyWithdrawn);
+
+        if ($amount > $available) {
+            throw ValidationException::withMessages([
+                'amount' => 'Withdrawal exceeds available commission balance of ' . number_format($available) . ' UGX.',
+            ]);
+        }
+
+        $now = now();
+        $withdrawnAt = isset($validated['withdrawn_at'])
+            ? Carbon::parse($validated['withdrawn_at'])
+            : $now;
+
+        $withdrawalId = DB::table('commission_withdrawals')->insertGetId([
+            'amount'         => $amount,
+            'reference'      => $validated['reference'] ?? null,
+            'wallet_account' => $this->commissionWalletAccount() ?: null,
+            'note'           => $validated['note'] ?? null,
+            'withdrawn_at'   => $withdrawnAt,
+            'created_at'     => $now,
+        ]);
+
+        $withdrawal = DB::table('commission_withdrawals')->where('id', $withdrawalId)->first();
+        $totalWithdrawn = $alreadyWithdrawn + $amount;
+
+        return response()->json([
+            'success'    => true,
+            'withdrawal' => $this->serialiseCommissionWithdrawal($withdrawal),
+            'commission' => [
+                'wallet_received' => $walletReceived,
+                'total_paid'      => $walletReceived,
+                'total_withdrawn' => $totalWithdrawn,
+                'available'       => max(0, $walletReceived - $totalWithdrawn),
+                'current_total'   => max(0, $walletReceived - $totalWithdrawn),
+            ],
+        ], 201);
     }
 
     public function retryCommission(Payment $payment): JsonResponse
