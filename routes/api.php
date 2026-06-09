@@ -197,6 +197,8 @@ Route::prefix('config')->group(function () {
         ->middleware('throttle:api');
     Route::put('/vip-config', [ConfigController::class, 'updateVipConfig'])
         ->middleware('auth.admin');
+    Route::post('/ad-media', [ConfigController::class, 'updateAdMedia'])
+        ->middleware('auth.admin');
 });
 
 // ─── Notifications ───────────────────────────────────────────────────────────
