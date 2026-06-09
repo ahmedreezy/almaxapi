@@ -8,25 +8,37 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Shared file upload/delete helpers used by controllers that handle images.
+ * Shared file upload/delete helpers used by controllers that handle public media.
  *
  * Security:
  * - MIME type verified via finfo (not just extension)
  * - UUID filenames (no user-controlled path components)
- * - 5 MB hard limit
+ * - Controller validation sets the per-use file size limit
  */
 trait HandlesFileUploads
 {
     protected function storeUpload(UploadedFile $file, string $folder): string
     {
+        return $this->storeTypedUpload($file, $folder, [
+            'image/jpeg' => 'jpg',
+            'image/png'  => 'png',
+            'image/webp' => 'webp',
+        ], 'image', 'File must be a valid JPEG, PNG, or WebP image.');
+    }
+
+    protected function storeTypedUpload(
+        UploadedFile $file,
+        string $folder,
+        array $allowed,
+        string $field,
+        string $message
+    ): string {
         $finfo    = new \finfo(FILEINFO_MIME_TYPE);
         $mimeType = $finfo->file($file->getRealPath());
 
-        $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
-
         if (! array_key_exists($mimeType, $allowed)) {
             throw ValidationException::withMessages([
-                'image' => ['File must be a valid JPEG, PNG, or WebP image.'],
+                $field => [$message],
             ]);
         }
 

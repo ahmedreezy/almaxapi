@@ -17,6 +17,8 @@ use Tests\TestCase;
  */
 class ConfigTest extends TestCase
 {
+    private const PNG_1X1_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -28,6 +30,11 @@ class ConfigTest extends TestCase
         VipConfig::updateOrCreate(['key' => 'odds_1.5_weekly_price'],['value' => '500']);
         VipConfig::updateOrCreate(['key' => 'odds_5_daily_price'],   ['value' => '150']);
         VipConfig::updateOrCreate(['key' => 'odds_5_weekly_price'],  ['value' => '700']);
+    }
+
+    private function fakePng(string $name): UploadedFile
+    {
+        return UploadedFile::fake()->createWithContent($name, base64_decode(self::PNG_1X1_BASE64));
     }
 
     // ─── free-odd2 ────────────────────────────────────────────────────────
@@ -44,7 +51,7 @@ class ConfigTest extends TestCase
     {
         FreeOdd2::updateOrCreate(['id' => 1], ['content' => '{}']);
         $ctx  = $this->createAdmin();
-        $file = UploadedFile::fake()->image('odd2.png', 200, 100);
+        $file = $this->fakePng('odd2.png');
 
         $this->withHeaders($ctx['headers'])
             ->putJson('/api/config/free-odd2', [
@@ -104,6 +111,52 @@ class ConfigTest extends TestCase
                 'value' => 'injected_value',
             ])
             ->assertStatus(422);
+    }
+
+    public function test_admin_can_update_ad_link(): void
+    {
+        $ctx = $this->createAdmin();
+
+        $this->withHeaders($ctx['headers'])
+            ->postJson('/api/config/ad-media', [
+                'ad_media_type' => 'link',
+                'ad_url'        => 'https://example.com/promo',
+            ])
+            ->assertStatus(200)
+            ->assertJson([
+                'ad_media_type' => 'link',
+                'ad_media_url'  => 'https://example.com/promo',
+            ]);
+
+        $this->assertDatabaseHas('vip_config', ['key' => 'ad_media_type', 'value' => 'link']);
+        $this->assertDatabaseHas('vip_config', ['key' => 'ad_media_url', 'value' => 'https://example.com/promo']);
+    }
+
+    public function test_admin_can_upload_ad_picture(): void
+    {
+        $ctx = $this->createAdmin();
+        $file = $this->fakePng('promo.png');
+
+        $this->withHeaders($ctx['headers'])
+            ->post('/api/config/ad-media', [
+                'ad_media_type' => 'image',
+                'ad_file'       => $file,
+            ])
+            ->assertStatus(200)
+            ->assertJson(['ad_media_type' => 'image']);
+
+        $this->assertDatabaseHas('vip_config', ['key' => 'ad_media_type', 'value' => 'image']);
+        $this->assertTrue(VipConfig::getValue('ad_media_url') !== '');
+        Storage::disk('uploads')->assertExists(str_replace('/uploads/', '', VipConfig::getValue('ad_media_url')));
+    }
+
+    public function test_updating_ad_media_requires_admin(): void
+    {
+        $this->postJson('/api/config/ad-media', [
+                'ad_media_type' => 'link',
+                'ad_url'        => 'https://example.com/promo',
+            ])
+            ->assertStatus(401);
     }
 
     public function test_updating_vip_config_requires_admin(): void
