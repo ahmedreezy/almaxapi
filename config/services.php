@@ -43,7 +43,7 @@ return [
         'callback_url'  => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
         'agent_commission' => [
             'enabled'          => env('JPESA_AGENT_COMMISSION_ENABLED', false),
-            'ratio'            => env('JPESA_AGENT_COMMISSION_RATIO', 0.1),
+            'ratio'            => env('JPESA_AGENT_COMMISSION_RATIO', 0.2),
             'recipient_type'   => env('JPESA_AGENT_COMMISSION_RECIPIENT_TYPE', 'business'),
             'recipient_email'  => env('JPESA_AGENT_COMMISSION_RECIPIENT_EMAIL', ''),
             'recipient_mobile' => env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', ''),

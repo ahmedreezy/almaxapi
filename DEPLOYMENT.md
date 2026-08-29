@@ -85,9 +85,24 @@ CORS_ALLOWED_ORIGINS=https://almaxpredictions.com
 # Webhook HMAC secret (must match Node.js WEBHOOK_SECRET)
 WEBHOOK_SECRET=replace_with_real_secret
 
+# Agent commission for future payments and retried unpaid commissions
+JPESA_AGENT_COMMISSION_ENABLED=true
+JPESA_AGENT_COMMISSION_RATIO=0.2
+
 # Admin bootstrap (first-run only, then delete from .env)
 ADMIN_INITIAL_PASSWORD=replace_with_strong_password
 ```
+
+After changing the commission ratio on an existing deployment, refresh Laravel's
+cached configuration before processing more payments:
+
+```bash
+php artisan config:clear
+php artisan config:cache
+```
+
+If the legacy Node.js API is still running, set
+`JPESA_AGENT_COMMISSION_RATE=0.20` in its environment and restart that process.
 
 ---
 

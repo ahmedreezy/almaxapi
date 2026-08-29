@@ -26,10 +26,10 @@ class DeveloperAnalyticsTest extends TestCase
         return ['Authorization' => "Bearer {$token}"];
     }
 
-    public function test_commission_analytics_includes_failed_commissions_for_retry_visibility(): void
+    public function test_commission_analytics_reports_current_rate_and_preserves_historical_amounts(): void
     {
         Config::set('services.mobile_money.agent_commission.enabled', true);
-        Config::set('services.mobile_money.agent_commission.ratio', 0.1);
+        Config::set('services.mobile_money.agent_commission.ratio', 0.2);
 
         $user = User::create([
             'username'      => 'Commission Member',
@@ -104,7 +104,7 @@ class DeveloperAnalyticsTest extends TestCase
             ->assertStatus(200);
 
         $response->assertJsonPath('finance.total_revenue', 550000)
-            ->assertJsonPath('commission.ratio', 0.1)
+            ->assertJsonPath('commission.ratio', 0.2)
             ->assertJsonPath('commission.total_earned', 3000)
             ->assertJsonPath('commission.total_paid', 1000)
             ->assertJsonPath('commission.outstanding', 2000)
@@ -198,7 +198,7 @@ class DeveloperAnalyticsTest extends TestCase
         Config::set('services.mobile_money.callback_url', 'https://example.test/api/payments/webhook');
         Config::set('services.mobile_money.agent_commission', [
             'enabled'          => true,
-            'ratio'            => 0.1,
+            'ratio'            => 0.2,
             'recipient_type'   => 'business',
             'recipient_email'  => 'prof.markdemo@gmail.com',
             'recipient_mobile' => '0704045918',
@@ -250,6 +250,8 @@ class DeveloperAnalyticsTest extends TestCase
 
         $payment->refresh();
         $this->assertSame('sent', $payment->agent_commission_status);
+        $this->assertEquals(4000, $payment->agent_commission_amount);
+        $this->assertEquals(0.2, $payment->agent_commission_ratio);
         $this->assertSame('RETRY-COM-123', $payment->agent_commission_transaction_id);
         $this->assertNull($payment->agent_commission_error);
 
@@ -259,7 +261,7 @@ class DeveloperAnalyticsTest extends TestCase
             return str_contains($body, '<action>debit</action>')
                 && str_contains($body, '<pt>gwallet</pt>')
                 && str_contains($body, '<business>prof.markdemo@gmail.com</business>')
-                && str_contains($body, '<amount>2000</amount>');
+                && str_contains($body, '<amount>4000</amount>');
         });
     }
 }
