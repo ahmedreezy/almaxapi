@@ -43,7 +43,7 @@ class MobileMoneyService
 
         $commission = config('services.mobile_money.agent_commission', []);
         $this->agentCommissionEnabled       = filter_var($commission['enabled'] ?? false, FILTER_VALIDATE_BOOL);
-        $this->agentCommissionRatio         = (float) ($commission['ratio'] ?? 0.1);
+        $this->agentCommissionRatio         = (float) ($commission['ratio'] ?? 0.2);
         $this->agentCommissionRecipientType = strtolower((string) ($commission['recipient_type'] ?? 'email'));
         $this->agentCommissionRecipientEmail = trim((string) ($commission['recipient_email'] ?? ''));
         $this->agentCommissionRecipientMobile = trim((string) ($commission['recipient_mobile'] ?? ''));

@@ -94,7 +94,7 @@ class PaymentTest extends TestCase
         Config::set('services.mobile_money.callback_url', 'https://example.test/api/payments/webhook');
         Config::set('services.mobile_money.agent_commission', [
             'enabled'          => true,
-            'ratio'            => 0.1,
+            'ratio'            => 0.2,
             'recipient_type'   => 'business',
             'recipient_email'  => 'prof.markdemo@gmail.com',
             'recipient_mobile' => '0704045918',
@@ -140,8 +140,8 @@ class PaymentTest extends TestCase
         $payment->refresh();
         $this->assertSame('confirmed', $payment->status);
         $this->assertSame('sent', $payment->agent_commission_status);
-        $this->assertEquals(500, $payment->agent_commission_amount);
-        $this->assertEquals(0.1, $payment->agent_commission_ratio);
+        $this->assertEquals(1000, $payment->agent_commission_amount);
+        $this->assertEquals(0.2, $payment->agent_commission_ratio);
         $this->assertSame('COM-123', $payment->agent_commission_transaction_id);
 
         Http::assertSentCount(1);
@@ -154,7 +154,7 @@ class PaymentTest extends TestCase
                 && str_contains($body, '<pt>gwallet</pt>')
                 && str_contains($body, '<business>prof.markdemo@gmail.com</business>')
                 && str_contains($body, '<cur>UGX</cur>')
-                && str_contains($body, '<amount>500</amount>')
+                && str_contains($body, '<amount>1000</amount>')
                 && str_contains($body, '<callback>https://example.test/api/payments/webhook</callback>');
         });
 

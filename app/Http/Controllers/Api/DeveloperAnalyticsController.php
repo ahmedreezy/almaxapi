@@ -175,11 +175,8 @@ class DeveloperAnalyticsController extends Controller
             ->groupBy('payment_method')
             ->map(fn ($rows) => (float) $rows->sum('agent_commission_amount'));
 
-        // Commission ratio (read from latest stored value, fall back to env default)
-        $commRatio = (float) (
-            $trackedCommissionRows->first(fn ($row) => $row->agent_commission_ratio !== null)?->agent_commission_ratio
-            ?? config('services.mobile_money.agent_commission.ratio', 0.1)
-        );
+        // Report the current configured rate; stored row values remain historical.
+        $commRatio = (float) config('services.mobile_money.agent_commission.ratio', 0.2);
 
         $recentComm = $trackedCommissionRows
             ->take(25)
@@ -248,7 +245,7 @@ class DeveloperAnalyticsController extends Controller
             ],
             'commission' => [
                 'enabled'         => (bool) config('services.mobile_money.agent_commission.enabled', false),
-                'ratio'           => $commRatio ?: 0.1,
+                'ratio'           => $commRatio,
                 'wallet_account'  => $this->commissionWalletAccount(),
                 'total_earned'    => $totalEarned,
                 'overall_total'   => $totalEarned,
