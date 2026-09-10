@@ -65,6 +65,14 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
+            // Preserve security and validation status codes from signed URLs and
+            // other framework HTTP exceptions instead of converting them to 500.
+            if ($request->is('api/*') && $e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface) {
+                return response()->json([
+                    'error' => \Symfony\Component\HttpFoundation\Response::$statusTexts[$e->getStatusCode()] ?? 'Request failed',
+                ], $e->getStatusCode());
+            }
+
             if ($request->is('api/*')) {
                 $debug = config('app.debug');
                 return response()->json([

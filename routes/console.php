@@ -2,6 +2,7 @@
 
 use App\Console\Commands\CleanupDeadlineSubscriptions;
 use App\Models\AdminUser;
+use App\Models\SupportMessage;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
@@ -17,6 +18,7 @@ Artisan::command('admin:rotate-password {--username=admin : Admin username} {--p
 
     if ($username === '') {
         $this->error('Username cannot be empty.');
+
         return self::FAILURE;
     }
 
@@ -26,6 +28,7 @@ Artisan::command('admin:rotate-password {--username=admin : Admin username} {--p
 
     if (mb_strlen($password) < 12) {
         $this->error('Password must be at least 12 characters.');
+
         return self::FAILURE;
     }
 
@@ -58,3 +61,7 @@ Artisan::command('admin:rotate-password {--username=admin : Admin username} {--p
 // Ensure crontab on production server contains:
 //   * * * * * cd /path/to/almaxapi && php artisan schedule:run >> /dev/null 2>&1
 Schedule::command(CleanupDeadlineSubscriptions::class)->hourly();
+Schedule::call(function () {
+    SupportMessage::where('created_at', '<', now()->subDays(max(1, (int) config('support.retention_days', 365))))
+        ->delete();
+})->dailyAt('02:30')->name('purge-old-support-messages')->withoutOverlapping();

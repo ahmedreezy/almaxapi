@@ -14,6 +14,10 @@ use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\DeveloperAnalyticsController;
 use App\Http\Controllers\Api\WebhookController;
+use App\Http\Controllers\Api\SupportAdminController;
+use App\Http\Controllers\Api\SupportKnowledgeController;
+use App\Http\Controllers\Api\SupportReceiptController;
+use App\Http\Controllers\Api\TwilioSupportWebhookController;
 
 /*
 |--------------------------------------------------------------------------
@@ -41,6 +45,27 @@ Route::post('/analytics/developer/payments/{payment}/retry-commission', [Develop
 // ─── GitHub deployment webhook (no auth, HMAC-verified inside controller) ──
 Route::post('/webhook/github', [WebhookController::class, 'github'])
     ->middleware('throttle:20,1');
+
+// ─── AI support / WhatsApp ────────────────────────────────────────────────
+// Twilio authenticates these callbacks with X-Twilio-Signature in controller.
+Route::post('/support/twilio/inbound', [TwilioSupportWebhookController::class, 'inbound']);
+Route::post('/support/twilio/status', [TwilioSupportWebhookController::class, 'status']);
+Route::get('/support/receipts/{payment}', [SupportReceiptController::class, 'show'])
+    ->name('support.receipt')
+    ->middleware('signed');
+
+Route::prefix('support/admin')->middleware('auth.admin')->group(function () {
+    Route::get('/metrics', [SupportAdminController::class, 'metrics']);
+    Route::get('/conversations', [SupportAdminController::class, 'index']);
+    Route::get('/conversations/{conversation}', [SupportAdminController::class, 'show']);
+    Route::patch('/conversations/{conversation}', [SupportAdminController::class, 'update']);
+    Route::post('/conversations/{conversation}/reply', [SupportAdminController::class, 'reply']);
+
+    Route::get('/knowledge', [SupportKnowledgeController::class, 'index']);
+    Route::post('/knowledge', [SupportKnowledgeController::class, 'store']);
+    Route::patch('/knowledge/{article}', [SupportKnowledgeController::class, 'update']);
+    Route::delete('/knowledge/{article}', [SupportKnowledgeController::class, 'destroy']);
+});
 
 // ─── Auth (admin) ───────────────────────────────────────────────────────────
 Route::prefix('auth')->middleware('throttle:auth')->group(function () {
