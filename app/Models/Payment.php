@@ -19,6 +19,7 @@ class Payment extends Model
         'agent_commission_status', 'agent_commission_reference',
         'agent_commission_transaction_id', 'agent_commission_recipient',
         'agent_commission_error', 'agent_commission_processed_at',
+        'receipt_number',
     ];
 
     protected $casts = [

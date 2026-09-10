@@ -53,4 +53,19 @@ return [
         ],
     ],
 
+    'twilio' => [
+        'account_sid' => env('TWILIO_ACCOUNT_SID', ''),
+        'auth_token' => env('TWILIO_AUTH_TOKEN', ''),
+        'whatsapp_from' => env('TWILIO_WHATSAPP_FROM', ''),
+        'inbound_webhook_url' => env('TWILIO_INBOUND_WEBHOOK_URL', ''),
+        'status_webhook_url' => env('TWILIO_STATUS_WEBHOOK_URL', ''),
+    ],
+
+    'openai' => [
+        'api_key' => env('OPENAI_API_KEY', ''),
+        'model' => env('OPENAI_MODEL', 'gpt-5.4-mini'),
+        'base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+        'timeout' => (int) env('OPENAI_TIMEOUT_SECONDS', 45),
+    ],
+
 ];
