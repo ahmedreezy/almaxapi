@@ -2,6 +2,7 @@
 
 namespace App\Services\Support;
 
+use App\Models\Group;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\SupportConversation;
@@ -22,6 +23,7 @@ class SupportToolExecutor
     ): array {
         try {
             $result = match ($name) {
+                'get_available_packages' => $this->availablePackages(),
                 'get_recent_payments' => $this->recentPayments($conversation),
                 'check_payment_status' => $this->checkPayment($conversation, $arguments),
                 'get_subscription_status' => $this->subscriptionStatus($conversation),
@@ -46,6 +48,32 @@ class SupportToolExecutor
         ]);
 
         return $result;
+    }
+
+    private function availablePackages(): array
+    {
+        $packages = Group::orderBy('price')
+            ->get()
+            ->filter(fn (Group $group) => $group->isPubliclyVisible() && ! $group->isPastDeadline())
+            ->map(fn (Group $group) => [
+                'id' => $group->id,
+                'name' => $group->name,
+                'plan_type' => $group->plan_type,
+                'duration_days' => match ($group->plan_type) {
+                    'monthly' => 30,
+                    'weekly', 'special' => 7,
+                    default => 1,
+                },
+                'odds_type' => $group->is_special && $group->special_odds
+                    ? $group->special_odds
+                    : $group->odds_type,
+                'price' => $group->effectivePrice(),
+                'currency' => 'UGX',
+                'subscription_deadline' => $group->subscription_deadline,
+            ])
+            ->values();
+
+        return ['ok' => true, 'packages' => $packages];
     }
 
     private function recentPayments(SupportConversation $conversation): array

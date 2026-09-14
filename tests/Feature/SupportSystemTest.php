@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\ProcessSupportMessage;
+use App\Models\Group;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\SupportContact;
@@ -12,6 +13,8 @@ use App\Models\SupportKnowledgeArticle;
 use App\Models\SupportMessage;
 use App\Models\SupportToolAudit;
 use App\Services\Support\SupportQuotaService;
+use App\Services\Support\SupportToolExecutor;
+use Database\Seeders\SupportKnowledgeSeeder;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\URL;
@@ -265,6 +268,10 @@ class SupportSystemTest extends TestCase
         $openAiCalls = 0;
         Http::fake(function ($request) use (&$openAiCalls) {
             if (str_contains($request->url(), 'api.openai.test')) {
+                $this->assertStringContainsString('Almax Predictions is a football prediction-content service', $request['instructions']);
+                $this->assertTrue(collect($request['tools'])->contains(
+                    fn (array $tool) => ($tool['name'] ?? '') === 'get_available_packages'
+                ));
                 $openAiCalls++;
                 if ($openAiCalls === 1) {
                     return Http::response([
@@ -316,6 +323,67 @@ class SupportSystemTest extends TestCase
         $this->assertTrue(SupportToolAudit::first()->successful);
         $this->assertSame('resolved', $conversation->fresh()->status);
         $this->assertSame(2, $openAiCalls);
+    }
+
+    public function test_available_packages_tool_returns_only_current_public_packages_without_paid_content(): void
+    {
+        $available = Group::create([
+            'name' => 'Odds 2 Daily',
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'price' => 10000,
+            'betslip_link' => 'https://private.example/betslip',
+            'betslip_code' => 'PRIVATE-CODE',
+            'is_active' => true,
+        ]);
+        Group::create([
+            'name' => 'Hidden Package',
+            'odds_type' => '5',
+            'plan_type' => 'weekly',
+            'price' => 55000,
+            'is_active' => false,
+        ]);
+        $contact = SupportContact::create([
+            'channel' => 'whatsapp',
+            'external_id' => '+256707777777',
+            'phone' => '+256707777777',
+        ]);
+        $conversation = SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+        ]);
+        $message = SupportMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'sender_type' => 'customer',
+            'body' => 'Which packages are available?',
+        ]);
+
+        $result = app(SupportToolExecutor::class)->execute(
+            $conversation,
+            $message,
+            'get_available_packages',
+            []
+        );
+
+        $this->assertTrue($result['ok']);
+        $package = collect($result['packages'])->firstWhere('id', $available->id);
+        $this->assertNotNull($package);
+        $this->assertSame(10000.0, $package['price']);
+        $this->assertFalse(collect($result['packages'])->contains('name', 'Hidden Package'));
+        $this->assertTrue(collect($result['packages'])->every(
+            fn (array $item) => ! array_key_exists('betslip_link', $item)
+                && ! array_key_exists('betslip_code', $item)
+        ));
+    }
+
+    public function test_baseline_support_knowledge_seeder_is_idempotent(): void
+    {
+        $this->seed(SupportKnowledgeSeeder::class);
+        $this->seed(SupportKnowledgeSeeder::class);
+
+        $this->assertDatabaseCount('support_knowledge_articles', 7);
+        $this->assertDatabaseMissing('support_knowledge_articles', ['status' => 'draft']);
     }
 
     private function signature(string $url, array $params): string
