@@ -4,9 +4,24 @@ namespace App\Services\Support;
 
 use App\Models\SupportKnowledgeArticle;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\File;
 
 class SupportKnowledgeService
 {
+    public function systemContext(): string
+    {
+        $path = (string) config('support.system_context_path', resource_path('support/almax.md'));
+
+        if ($path !== '' && File::isFile($path)) {
+            $context = trim(File::get($path));
+            if ($context !== '') {
+                return $context;
+            }
+        }
+
+        return 'Almax Predictions provides football prediction content and customer subscription support.';
+    }
+
     public function contextFor(string $message): string
     {
         $articles = SupportKnowledgeArticle::where('status', 'published')

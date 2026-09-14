@@ -1,6 +1,7 @@
 <?php
 
 return [
+    'system_context_path' => env('SUPPORT_SYSTEM_CONTEXT_PATH') ?: resource_path('support/almax.md'),
     'timezone' => env('SUPPORT_TIMEZONE', 'Africa/Kampala'),
     'daily_reply_limit' => (int) env('SUPPORT_DAILY_REPLY_LIMIT', 10),
     'max_output_tokens' => (int) env('SUPPORT_MAX_OUTPUT_TOKENS', 800),

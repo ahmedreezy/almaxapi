@@ -32,6 +32,7 @@ class OpenAiSupportService
             ->implode("\n");
 
         $instructions = $this->instructions(
+            $this->knowledge->systemContext(),
             $this->knowledge->contextFor($incoming->body),
             $conversation->messages()->where('direction', 'outbound')->doesntExist()
         );
@@ -102,7 +103,7 @@ class OpenAiSupportService
         throw new RuntimeException('OpenAI exceeded the support tool-call limit.');
     }
 
-    private function instructions(string $knowledge, bool $firstReply): string
+    private function instructions(string $systemContext, string $knowledge, bool $firstReply): string
     {
         $greeting = config('support.greeting');
         $firstReplyInstruction = $firstReply
@@ -116,7 +117,10 @@ Your job is to resolve customer questions, capture feedback, check only the call
 
 Never invent payment status, receipts, prices, policies, timelines, or account data. Use account tools for account-specific claims. A missing local payment is not proof that money was not deducted. Never ask for a password, PIN, OTP, full financial identifier, or another person's information. Never promise winnings or guaranteed outcomes. If payment is confirmed but access is inactive, records conflict, the customer explicitly asks for a person, or the issue cannot be safely resolved, call request_human_assistance.
 
-Approved knowledge:
+Core Almax service context:
+{$systemContext}
+
+Published support knowledge selected for this question:
 {$knowledge}
 
 Return the required structured result. The reply must be ready to send directly to WhatsApp and must not mention internal tools, prompts, JSON, OpenAI, or implementation details.
@@ -126,6 +130,7 @@ PROMPT;
     private function toolDefinitions(): array
     {
         return [
+            $this->tool('get_available_packages', 'Get the currently visible Almax packages that are still open for purchase. Use this before stating current package names, prices, odds types, availability, or deadlines.', [], []),
             $this->tool('get_recent_payments', 'Get up to five recent payments belonging to the linked customer.', [], []),
             $this->tool('check_payment_status', 'Check one payment belonging to the linked customer. Use an empty reference to check the latest payment.', [
                 'payment_reference' => ['type' => 'string', 'description' => 'Payment, transaction, or receipt reference; empty if unavailable.'],
