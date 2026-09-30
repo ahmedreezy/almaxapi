@@ -41,6 +41,8 @@ php artisan view:cache
 echo "[6/6] Verifying health endpoint routing..."
 php artisan route:list | grep -E "api/health|config/vip-config" || true
 
+php artisan queue:restart
+
 echo ""
 echo "Deploy complete."
 echo "=========================================="
