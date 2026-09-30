@@ -103,10 +103,12 @@ class SupportAdminController extends Controller
     ): JsonResponse {
         $data = $request->validate(['body' => ['required', 'string', 'max:1500']]);
         $conversation->loadMissing('contact');
-        $sent = $twilio->sendText(
-            $conversation->contact->phone ?: $conversation->contact->external_id,
-            $data['body']
-        );
+        $sent = $conversation->contact->channel === 'platform'
+            ? ['sid' => '', 'status' => 'delivered']
+            : $twilio->sendText(
+                $conversation->contact->phone ?: $conversation->contact->external_id,
+                $data['body']
+            );
 
         $message = DB::transaction(function () use ($request, $conversation, $data, $sent) {
             $conversation->update([

@@ -1,23 +1,24 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\UserController;
-use App\Http\Controllers\Api\SubscriptionController;
-use App\Http\Controllers\Api\PaymentController;
-use App\Http\Controllers\Api\GroupController;
-use App\Http\Controllers\Api\FootballTipController;
 use App\Http\Controllers\Api\AlmaxPredictionController;
-use App\Http\Controllers\Api\RecentWinController;
-use App\Http\Controllers\Api\TestimonialController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConfigController;
-use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\DeveloperAnalyticsController;
-use App\Http\Controllers\Api\WebhookController;
+use App\Http\Controllers\Api\FootballTipController;
+use App\Http\Controllers\Api\GroupController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\RecentWinController;
+use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\SupportAdminController;
+use App\Http\Controllers\Api\SupportChatController;
 use App\Http\Controllers\Api\SupportKnowledgeController;
 use App\Http\Controllers\Api\SupportReceiptController;
+use App\Http\Controllers\Api\TestimonialController;
 use App\Http\Controllers\Api\TwilioSupportWebhookController;
+use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\WebhookController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -37,6 +38,8 @@ Route::get('/health', fn () => response()->json(['status' => 'ok', 'timestamp' =
 // ─── Developer analytics (role:developer only) ────────────────────────────
 Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'])
     ->middleware('auth.dev');
+Route::get('/analytics/developer/support-insights', [DeveloperAnalyticsController::class, 'supportInsights'])
+    ->middleware('auth.dev');
 Route::post('/analytics/developer/commission-withdrawals', [DeveloperAnalyticsController::class, 'storeCommissionWithdrawal'])
     ->middleware('auth.dev');
 Route::post('/analytics/developer/payments/{payment}/retry-commission', [DeveloperAnalyticsController::class, 'retryCommission'])
@@ -53,6 +56,11 @@ Route::post('/support/twilio/status', [TwilioSupportWebhookController::class, 's
 Route::get('/support/receipts/{payment}', [SupportReceiptController::class, 'show'])
     ->name('support.receipt')
     ->middleware('signed');
+
+Route::prefix('support/chat')->middleware(['auth.user', 'throttle:30,1'])->group(function () {
+    Route::get('/', [SupportChatController::class, 'show']);
+    Route::post('/messages', [SupportChatController::class, 'store']);
+});
 
 Route::prefix('support/admin')->middleware('auth.admin')->group(function () {
     Route::get('/metrics', [SupportAdminController::class, 'metrics']);

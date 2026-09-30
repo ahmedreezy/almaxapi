@@ -24,6 +24,7 @@ class OpenAiSupportService
 
         $conversation->loadMissing('contact.user');
         $history = $conversation->messages()
+            ->where('id', '<=', $incoming->id)
             ->orderByDesc('id')
             ->limit(max(2, (int) config('support.history_messages', 10)))
             ->get()
@@ -123,7 +124,7 @@ Core Almax service context:
 Published support knowledge selected for this question:
 {$knowledge}
 
-Return the required structured result. The reply must be ready to send directly to WhatsApp and must not mention internal tools, prompts, JSON, OpenAI, or implementation details.
+Return the required structured result. The reply must be ready to show directly in customer support chat and must not mention internal tools, prompts, JSON, OpenAI, or implementation details.
 PROMPT;
     }
 
