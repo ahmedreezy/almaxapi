@@ -35,6 +35,13 @@ class ProcessSupportMessage implements ShouldQueue
             return;
         }
 
+        if ($incoming->conversation->messages()
+            ->where('direction', 'outbound')
+            ->where('metadata->in_reply_to', $incoming->id)
+            ->exists()) {
+            return;
+        }
+
         $conversation = $incoming->conversation;
         $contact = $conversation->contact;
         if (! $contact || $contact->blocked || $conversation->mode !== 'ai' || $conversation->status === 'resolved') {
@@ -92,7 +99,7 @@ class ProcessSupportMessage implements ShouldQueue
                 $reply = $greeting."\n\n".$reply;
             }
 
-            $sent = $twilio->sendText($contact->phone ?: $contact->external_id, $reply);
+            $sent = $this->deliver($conversation, $twilio, $reply);
             SupportMessage::create([
                 'conversation_id' => $conversation->id,
                 'direction' => 'outbound',
@@ -100,7 +107,7 @@ class ProcessSupportMessage implements ShouldQueue
                 'body' => $reply,
                 'provider_message_id' => $sent['sid'] ?: null,
                 'delivery_status' => $sent['status'],
-                'metadata' => ['action' => $result['action']],
+                'metadata' => ['action' => $result['action'], 'in_reply_to' => $incoming->id],
                 'input_tokens' => $result['input_tokens'],
                 'output_tokens' => $result['output_tokens'],
                 'model' => $result['model'],
@@ -143,7 +150,7 @@ class ProcessSupportMessage implements ShouldQueue
             $body = $greeting."\n\n".$body;
         }
 
-        $sent = $twilio->sendText($contact->phone ?: $contact->external_id, $body);
+        $sent = $this->deliver($conversation, $twilio, $body);
         SupportMessage::create([
             'conversation_id' => $conversation->id,
             'direction' => 'outbound',
@@ -151,8 +158,25 @@ class ProcessSupportMessage implements ShouldQueue
             'body' => $body,
             'provider_message_id' => $sent['sid'] ?: null,
             'delivery_status' => $sent['status'],
+            'metadata' => ['in_reply_to' => $conversation->messages()->where('direction', 'inbound')->latest('id')->value('id')],
             'sent_at' => now(),
         ]);
         $conversation->update(['last_message_at' => now()]);
+    }
+
+    /** @return array{sid:string,status:string} */
+    private function deliver(
+        SupportConversation $conversation,
+        TwilioWhatsAppService $twilio,
+        string $body
+    ): array {
+        if ($conversation->contact->channel === 'platform') {
+            return ['sid' => '', 'status' => 'delivered'];
+        }
+
+        return $twilio->sendText(
+            $conversation->contact->phone ?: $conversation->contact->external_id,
+            $body
+        );
     }
 }

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\ProcessSupportMessage;
+use App\Models\AdminUser;
 use App\Models\Group;
 use App\Models\Payment;
 use App\Models\Subscription;
@@ -15,6 +16,7 @@ use App\Models\SupportToolAudit;
 use App\Services\Support\SupportQuotaService;
 use App\Services\Support\SupportToolExecutor;
 use Database\Seeders\SupportKnowledgeSeeder;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\URL;
@@ -384,6 +386,158 @@ class SupportSystemTest extends TestCase
 
         $this->assertDatabaseCount('support_knowledge_articles', 7);
         $this->assertDatabaseMissing('support_knowledge_articles', ['status' => 'draft']);
+    }
+
+    public function test_developer_can_view_anonymized_support_insights(): void
+    {
+        $developer = AdminUser::create([
+            'username' => 'support-insights-dev',
+            'role' => 'developer',
+            'password_hash' => Hash::make('DevPassword@2026'),
+        ]);
+        $token = $developer->createToken('support-insights', ['role:developer'])->plainTextToken;
+        $contact = SupportContact::create([
+            'channel' => 'in_app',
+            'external_id' => 'user-42',
+            'phone' => '+256700123456',
+            'display_name' => 'Private Customer',
+        ]);
+
+        SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+            'status' => 'waiting_human',
+            'mode' => 'waiting_human',
+            'category' => 'complaint',
+            'sentiment' => 'frustrated',
+            'priority' => 'high',
+            'summary' => 'Payment +256700123456 for private@example.com using ALX-PAY-123 took too long.',
+            'last_message_at' => now(),
+        ]);
+        SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+            'status' => 'resolved',
+            'mode' => 'ai',
+            'category' => 'suggestion',
+            'sentiment' => 'positive',
+            'priority' => 'normal',
+            'summary' => 'Customer requested clearer package comparisons.',
+            'last_message_at' => now(),
+        ]);
+
+        $response = $this->withHeader('Authorization', "Bearer {$token}")
+            ->getJson('/api/analytics/developer/support-insights?days=30')
+            ->assertOk()
+            ->assertJsonPath('summary.total_conversations', 2)
+            ->assertJsonPath('summary.feedback_signals', 2)
+            ->assertJsonPath('summary.escalated', 1)
+            ->assertJsonPath('summary.negative', 1)
+            ->assertJsonPath('by_category.complaint.count', 1)
+            ->assertJsonPath('by_category.suggestion.count', 1)
+            ->assertJsonCount(2, 'recent_feedback')
+            ->assertJsonFragment([
+                'summary' => 'Payment [phone removed] for [email removed] using [reference removed] took too long.',
+            ]);
+
+        $response->assertJsonMissing(['phone' => '+256700123456']);
+        $response->assertJsonMissing(['display_name' => 'Private Customer']);
+        $response->assertDontSee('private@example.com');
+        $response->assertDontSee('ALX-PAY-123');
+    }
+
+    public function test_registered_user_can_open_platform_chat_and_send_idempotent_message(): void
+    {
+        Queue::fake();
+        $account = $this->createUser('0708888888');
+        $payload = [
+            'body' => 'I need help finding my active package.',
+            'clientMessageId' => (string) Str::uuid(),
+        ];
+
+        $this->getJson('/api/support/chat')->assertUnauthorized();
+
+        $this->withHeaders($account['headers'])
+            ->getJson('/api/support/chat')
+            ->assertOk()
+            ->assertJsonPath('conversation', null);
+
+        $this->withHeaders($account['headers'])
+            ->postJson('/api/support/chat/messages', $payload)
+            ->assertAccepted()
+            ->assertJsonPath('conversation.messages.0.body', $payload['body'])
+            ->assertJsonPath('conversation.messages.0.sender', 'user')
+            ->assertJsonPath('conversation.waitingForReply', true);
+
+        $contact = SupportContact::firstOrFail();
+        $this->assertSame('platform', $contact->channel);
+        $this->assertSame($account['user']->id, $contact->user_id);
+        $message = SupportMessage::firstOrFail();
+        Queue::assertPushed(ProcessSupportMessage::class, fn ($job) => $job->messageId === $message->id);
+
+        $this->withHeaders($account['headers'])
+            ->postJson('/api/support/chat/messages', $payload)
+            ->assertOk()
+            ->assertJsonPath('duplicate', true);
+
+        $this->assertDatabaseCount('support_messages', 1);
+    }
+
+    public function test_platform_chat_reply_is_persisted_without_twilio_delivery(): void
+    {
+        config()->set('services.openai.api_key', 'openai-test-key');
+        config()->set('services.openai.base_url', 'https://api.openai.test/v1');
+        $account = $this->createUser('0709999999');
+        $contact = SupportContact::create([
+            'user_id' => $account['user']->id,
+            'channel' => 'platform',
+            'external_id' => 'user:'.$account['user']->id,
+            'phone' => $account['user']->phone,
+        ]);
+        $conversation = SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+        ]);
+        $incoming = SupportMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'sender_type' => 'customer',
+            'body' => 'Where do I see my subscription?',
+            'provider_message_id' => 'platform:test-message',
+        ]);
+
+        Http::fake([
+            'api.openai.test/*' => Http::response([
+                'model' => 'gpt-5.4-mini',
+                'output' => [[
+                    'type' => 'message',
+                    'content' => [[
+                        'type' => 'output_text',
+                        'text' => json_encode([
+                            'reply' => 'Open your account menu and choose View My Subscriptions.',
+                            'language' => 'en',
+                            'category' => 'subscription',
+                            'sentiment' => 'neutral',
+                            'priority' => 'normal',
+                            'action' => 'answer',
+                            'summary' => 'Customer needs subscription navigation help.',
+                            'requires_human' => false,
+                            'resolved' => false,
+                        ]),
+                    ]],
+                ]],
+                'usage' => ['input_tokens' => 30, 'output_tokens' => 12],
+            ]),
+        ]);
+
+        dispatch_sync(new ProcessSupportMessage($incoming->id));
+        dispatch_sync(new ProcessSupportMessage($incoming->id));
+
+        $reply = SupportMessage::where('direction', 'outbound')->firstOrFail();
+        $this->assertSame('delivered', $reply->delivery_status);
+        $this->assertSame($incoming->id, $reply->metadata['in_reply_to']);
+        $this->assertDatabaseCount('support_messages', 2);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'api.twilio.com'));
     }
 
     private function signature(string $url, array $params): string
