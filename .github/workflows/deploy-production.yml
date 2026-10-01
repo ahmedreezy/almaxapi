@@ -103,7 +103,8 @@ jobs:
 
           test -d "$api_path/.git"
           cd "$api_path"
-          git diff --quiet
+          # The frontend pipeline owns this shared public asset.
+          git diff --quiet -- . ':(exclude)public/favicon.ico'
           git diff --cached --quiet
           git fetch --prune origin main
           git checkout main
