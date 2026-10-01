@@ -181,8 +181,7 @@ class GroupController extends Controller
 
     /**
      * Admin: permanently delete a package.
-     * Blocked only if there are ACTIVE or PENDING subscriptions (data still in-use).
-     * Expired/rejected subscriptions are cascade-deleted with the group.
+     * Related subscriptions and payments are cascade-deleted with the package.
      */
     public function destroy(int $id): JsonResponse
     {
