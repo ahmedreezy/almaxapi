@@ -81,6 +81,28 @@ Open in browser:
 
 ## 6) Ongoing release commands
 
+Production deployment is automated by `.github/workflows/deploy-production.yml`
+in both repositories. A merge to `main` runs the repository tests and deploys
+that repository to cPanel over SSH.
+
+Create a GitHub environment named `production` in each repository and configure:
+
+- Secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
+  `DEPLOY_KNOWN_HOSTS`, and optionally `DEPLOY_PORT` (defaults to `22`).
+- Backend variables: `API_DEPLOY_PATH=/home/almaxpredictions.com/almaxapi`,
+  `API_HEALTH_URL=https://almaxpredictions.com/api/health`, and
+  `PRODUCTION_URL=https://almaxpredictions.com`.
+- Frontend variables:
+  `FRONTEND_DEPLOY_PATH=/home/almaxpredictions.com/newbet-side`,
+  `API_DEPLOY_PATH=/home/almaxpredictions.com/almaxapi`, and
+  `PRODUCTION_URL=https://almaxpredictions.com`.
+
+The SSH user must be able to read both server checkouts, pull their private
+GitHub repositories, and write Laravel's `public` and `storage` directories.
+The workflows stop instead of overwriting uncommitted server-side changes.
+
+The following commands remain available for a manual release:
+
 Backend release:
 
 ```bash
