@@ -9,6 +9,15 @@ echo "=========================================="
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$APP_DIR"
 
+if command -v composer >/dev/null 2>&1; then
+  COMPOSER_BIN="$(command -v composer)"
+elif [[ -x "$HOME/bin/composer" ]]; then
+  COMPOSER_BIN="$HOME/bin/composer"
+else
+  echo "[error] Composer was not found in PATH or at $HOME/bin/composer"
+  exit 1
+fi
+
 if [[ ! -f ".env" ]]; then
   echo "[error] .env not found in $APP_DIR"
   echo "Create .env first, then rerun."
@@ -21,7 +30,7 @@ if ! grep -q '^APP_KEY=base64:' .env; then
 fi
 
 echo "[1/6] Installing PHP dependencies..."
-composer install --no-dev --optimize-autoloader --no-interaction
+"$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction
 
 echo "[2/6] Running migrations..."
 php artisan migrate --force
