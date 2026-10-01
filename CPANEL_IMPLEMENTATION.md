@@ -8,15 +8,15 @@ This runbook assumes:
 ## 1) Server folder layout
 
 Using your cPanel base path:
-- /home/almaxpredictions.com/almaxapi
-- /home/almaxpredictions.com/newbet-side
+- /home/farmsnva/almaxapi
+- /home/farmsnva/newbet-side
 
 ## 2) Initial backend deploy (Laravel)
 
 Run on server:
 
 ```bash
-cd /home/almaxpredictions.com
+cd /home/farmsnva
 # clone/update your backend repo into almaxapi
 cd almaxapi
 composer install --no-dev --optimize-autoloader
@@ -54,17 +54,17 @@ bash scripts/deploy_cpanel.sh
 
 In cPanel Domains, set almaxpredictions.com document root to:
 
-- /home/almaxpredictions.com/almaxapi/public
+- /home/farmsnva/almaxapi/public
 
 ## 4) Initial frontend deploy (Vue)
 
 Run on server:
 
 ```bash
-cd /home/almaxpredictions.com
+cd /home/farmsnva
 # clone/update your frontend repo into newbet-side
 cd newbet-side
-export LARAVEL_PUBLIC_DIR=/home/almaxpredictions.com/almaxapi/public
+export LARAVEL_PUBLIC_DIR=/home/farmsnva/almaxapi/public
 npm run deploy:cpanel
 ```
 
@@ -89,12 +89,12 @@ Create a GitHub environment named `production` in each repository and configure:
 
 - Secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
   `DEPLOY_KNOWN_HOSTS`, and optionally `DEPLOY_PORT` (defaults to `22`).
-- Backend variables: `API_DEPLOY_PATH=/home/almaxpredictions.com/almaxapi`,
+- Backend variables: `API_DEPLOY_PATH=/home/farmsnva/almaxapi`,
   `API_HEALTH_URL=https://almaxpredictions.com/api/health`, and
   `PRODUCTION_URL=https://almaxpredictions.com`.
 - Frontend variables:
-  `FRONTEND_DEPLOY_PATH=/home/almaxpredictions.com/newbet-side`,
-  `API_DEPLOY_PATH=/home/almaxpredictions.com/almaxapi`, and
+  `FRONTEND_DEPLOY_PATH=/home/farmsnva/newbet-side`,
+  `API_DEPLOY_PATH=/home/farmsnva/almaxapi`, and
   `PRODUCTION_URL=https://almaxpredictions.com`.
 
 The SSH user must be able to read both server checkouts, pull their private
@@ -106,7 +106,7 @@ The following commands remain available for a manual release:
 Backend release:
 
 ```bash
-cd /home/almaxpredictions.com/almaxapi
+cd /home/farmsnva/almaxapi
 git pull origin main
 bash scripts/deploy_cpanel.sh
 ```
@@ -114,9 +114,9 @@ bash scripts/deploy_cpanel.sh
 Frontend release:
 
 ```bash
-cd /home/almaxpredictions.com/newbet-side
+cd /home/farmsnva/newbet-side
 git pull origin main
-export LARAVEL_PUBLIC_DIR=/home/almaxpredictions.com/almaxapi/public
+export LARAVEL_PUBLIC_DIR=/home/farmsnva/almaxapi/public
 npm run deploy:cpanel
 ```
 
