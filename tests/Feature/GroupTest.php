@@ -435,12 +435,12 @@ class GroupTest extends TestCase
         $this->withHeaders($admin['headers'])
             ->deleteJson("/api/groups/{$group->id}")
             ->assertStatus(200)
-            ->assertJsonPath('message', 'Group deleted.');
+            ->assertJsonPath('message', 'Package deleted.');
 
         $this->assertDatabaseMissing('groups', ['id' => $group->id]);
     }
 
-    public function test_cannot_delete_group_with_existing_subscriptions(): void
+    public function test_deleting_group_cascades_existing_subscriptions(): void
     {
         $admin = $this->createAdmin();
         $group = $this->makeGroup();
@@ -451,7 +451,7 @@ class GroupTest extends TestCase
         ]);
 
         // Create a subscription referencing this group
-        Subscription::create([
+        $subscription = Subscription::create([
             'user_id'        => $user->id,
             'group_id'       => $group->id,
             'plan_type'      => $group->plan_type,
@@ -464,9 +464,11 @@ class GroupTest extends TestCase
 
         $this->withHeaders($admin['headers'])
             ->deleteJson("/api/groups/{$group->id}")
-            ->assertStatus(409);
+            ->assertStatus(200)
+            ->assertJsonPath('message', 'Package deleted.');
 
-        $this->assertDatabaseHas('groups', ['id' => $group->id]);
+        $this->assertDatabaseMissing('groups', ['id' => $group->id]);
+        $this->assertDatabaseMissing('subscriptions', ['id' => $subscription->id]);
     }
 
     public function test_unauthenticated_cannot_delete_group(): void

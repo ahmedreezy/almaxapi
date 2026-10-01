@@ -242,7 +242,7 @@ class SubscriptionTest extends TestCase
 
         $this->getJson("/api/subscriptions/user/{$ctx['user']->id}")
             ->assertStatus(200)
-            ->assertJsonStructure([['id', 'user_id', 'odds_type', 'plan_type', 'status']]);
+            ->assertJsonStructure([['id', 'oddsType', 'planType', 'status']]);
     }
 
     public function test_pending_subscription_has_masked_betslip(): void
@@ -259,8 +259,8 @@ class SubscriptionTest extends TestCase
 
         // betslip should be masked for pending subscriptions
         $sub = $response->json('0');
-        $this->assertSame('', $sub['betslip_link']);
-        $this->assertSame('', $sub['betslip_code']);
+        $this->assertSame('', $sub['betslipLink']);
+        $this->assertSame('', $sub['betslipCode']);
     }
 
     // ─── Admin: list & update ─────────────────────────────────────────────

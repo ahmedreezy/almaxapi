@@ -10,7 +10,7 @@ use Tests\TestCase;
 /**
  * Tests for /api/football-tips — public read, admin write.
  *
- * FootballTip fields: home, away, competition, kickoff (required);
+ * FootballTip fields: home, away, competition, kickoff;
  *   winProb, kitColor, kitNumber, prediction, accent, caption, image (optional)
  */
 class FootballTipTest extends TestCase
@@ -98,14 +98,14 @@ class FootballTipTest extends TestCase
         $this->assertDatabaseMissing('football_tips', ['id' => $tip->id]);
     }
 
-    public function test_tip_required_fields_are_enforced(): void
+    public function test_optional_tip_fields_default_to_empty_strings(): void
     {
         $ctx = $this->createAdmin();
 
-        // missing 'kickoff' → validation error
         $this->withHeaders($ctx['headers'])
             ->postJson('/api/football-tips', ['home' => 'A', 'away' => 'B', 'competition' => 'C'])
-            ->assertStatus(422);
+            ->assertStatus(201)
+            ->assertJsonPath('kickoff', '');
     }
 
     public function test_image_filename_is_uuid_not_original_name(): void
