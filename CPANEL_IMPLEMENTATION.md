@@ -43,6 +43,11 @@ WEBHOOK_SECRET=<shared_secret>
 ADMIN_INITIAL_PASSWORD=<strong_temp_password>
 ```
 
+Values containing whitespace must be wrapped in single or double quotes. The
+deployment validates `.env` before Laravel starts and never prints invalid
+values. It also repairs a 64-character hexadecimal secret if copy/paste added
+spaces inside it, preserving the original file as `.env.backup`.
+
 Then run:
 
 ```bash

@@ -35,11 +35,6 @@ if [[ ! -f ".env" ]]; then
   exit 1
 fi
 
-if ! grep -q '^APP_KEY=base64:' .env; then
-  echo "[init] APP_KEY missing, generating..."
-  php artisan key:generate --force
-fi
-
 echo "[init] Preparing writable Laravel runtime directories..."
 mkdir -p \
   bootstrap/cache \
@@ -50,9 +45,9 @@ mkdir -p \
   storage/logs
 chmod -R u+rwX bootstrap/cache storage
 
-echo "[1/6] Installing PHP dependencies..."
+echo "[1/7] Installing PHP dependencies without application scripts..."
 composer_log="$(mktemp "${TMPDIR:-/tmp}/almaxapi-composer.XXXXXX")"
-if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction \
+if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction --no-scripts \
   2>&1 | tee "$composer_log"; then
   composer_failure="unclassified Composer error"
   if grep -Eqi 'permission denied|could not delete|cannot create cache|must be present and writable|file_put_contents.*failed|failed to open stream' "$composer_log"; then
@@ -85,22 +80,33 @@ if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction \
 fi
 rm -f "$composer_log"
 
-echo "[2/6] Running migrations..."
+echo "[2/7] Validating production environment..."
+php scripts/validate_env.php .env
+
+if ! grep -q '^APP_KEY=base64:' .env; then
+  echo "[init] APP_KEY missing, generating..."
+  php artisan key:generate --force
+fi
+
+echo "[3/7] Running Laravel Composer scripts..."
+"$COMPOSER_BIN" run-script post-autoload-dump --no-interaction
+
+echo "[4/7] Running migrations..."
 php artisan migrate --force
 
-echo "[3/6] Ensuring uploads directories exist..."
+echo "[5/7] Ensuring uploads directories exist..."
 mkdir -p public/uploads/proofs public/uploads/tips public/uploads/wins public/uploads/testimonials public/uploads/config
 chmod -R 775 public/uploads || true
 
-echo "[4/6] Clearing caches..."
+echo "[6/7] Clearing caches..."
 php artisan optimize:clear
 
-echo "[5/6] Rebuilding production caches..."
+echo "[7/7] Rebuilding production caches..."
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache
 
-echo "[6/6] Verifying health endpoint routing..."
+echo "[verify] Checking health endpoint routing..."
 php artisan route:list | grep -E "api/health|config/vip-config" || true
 
 php artisan queue:restart
