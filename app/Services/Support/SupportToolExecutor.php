@@ -28,7 +28,6 @@ class SupportToolExecutor
                 'check_payment_status' => $this->checkPayment($conversation, $arguments),
                 'get_subscription_status' => $this->subscriptionStatus($conversation),
                 'get_receipt' => $this->receipt($conversation, $arguments),
-                'request_human_assistance' => $this->requestHuman($conversation, $arguments),
                 default => ['ok' => false, 'error' => 'Unsupported tool.'],
             };
             $successful = (bool) ($result['ok'] ?? true);
@@ -116,7 +115,7 @@ class SupportToolExecutor
             return [
                 'ok' => true,
                 'found' => false,
-                'guidance' => 'Do not state that funds were not deducted. Ask for the transaction reference and offer human review.',
+                'guidance' => 'Do not state that funds were not deducted. Ask for the transaction reference so another automated check can be attempted.',
             ];
         }
 
@@ -130,7 +129,7 @@ class SupportToolExecutor
                 'message' => (string) ($provider['message'] ?? 'No provider status was returned.'),
             ];
             if ($provider['success'] ?? false) {
-                $payload['guidance'] = 'The provider reports success while Almax still shows pending. Do not request another payment; escalate for reconciliation.';
+                $payload['guidance'] = 'The provider reports success while Almax still shows pending. Do not request another payment. Explain the discrepancy and advise the customer to retry the automated status check later.';
             }
         }
 
@@ -201,21 +200,6 @@ class SupportToolExecutor
         ];
     }
 
-    private function requestHuman(SupportConversation $conversation, array $arguments): array
-    {
-        $conversation->update([
-            'mode' => 'waiting_human',
-            'status' => 'waiting_human',
-            'priority' => in_array($arguments['priority'] ?? null, ['low', 'normal', 'high', 'urgent'], true)
-                ? $arguments['priority']
-                : 'high',
-            'human_requested_at' => $conversation->human_requested_at ?? now(),
-            'summary' => mb_substr((string) ($arguments['reason'] ?? $conversation->summary), 0, 2000),
-        ]);
-
-        return ['ok' => true, 'case_reference' => $conversation->public_id, 'status' => 'waiting_human'];
-    }
-
     private function paymentPayload(Payment $payment): array
     {
         $transaction = (string) ($payment->transaction_id ?? '');
@@ -239,7 +223,7 @@ class SupportToolExecutor
         return [
             'ok' => false,
             'error' => 'account_not_linked',
-            'guidance' => 'Explain that this WhatsApp number is not linked to an Almax account and request human assistance.',
+            'guidance' => 'Explain that this WhatsApp number is not linked to an Almax account. Provide general guidance and ask the customer to sign in to the website chat for account-specific checks.',
         ];
     }
 

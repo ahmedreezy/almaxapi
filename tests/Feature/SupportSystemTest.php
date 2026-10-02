@@ -108,7 +108,7 @@ class SupportSystemTest extends TestCase
         $this->assertFalse($quota->claimLimitNotice($contact));
     }
 
-    public function test_admin_can_manage_knowledge_and_take_over_a_conversation(): void
+    public function test_admin_can_manage_knowledge_and_ai_limits(): void
     {
         $admin = $this->createAdmin();
         $contact = SupportContact::create([
@@ -119,6 +119,8 @@ class SupportSystemTest extends TestCase
         $conversation = SupportConversation::create([
             'public_id' => (string) Str::uuid(),
             'contact_id' => $contact->id,
+            'status' => 'waiting_human',
+            'mode' => 'waiting_human',
         ]);
 
         $this->withHeaders($admin['headers'])->postJson('/api/support/admin/knowledge', [
@@ -135,40 +137,46 @@ class SupportSystemTest extends TestCase
 
         $this->withHeaders($admin['headers'])
             ->patchJson("/api/support/admin/conversations/{$conversation->id}", [
-                'mode' => 'human',
+                'mode' => 'ai',
                 'dailyLimit' => 7,
             ])
             ->assertOk()
-            ->assertJsonPath('mode', 'human')
-            ->assertJsonPath('status', 'human');
+            ->assertJsonPath('mode', 'ai')
+            ->assertJsonPath('status', 'open');
 
         $this->assertSame(7, $contact->fresh()->daily_limit_override);
     }
 
-    public function test_human_reply_uses_twilio_without_consuming_ai_quota(): void
+    public function test_ai_only_migration_reopens_legacy_conversation_and_requeues_latest_message(): void
     {
-        Http::fake([
-            'api.twilio.com/*' => Http::response(['sid' => 'SM-OUT-1', 'status' => 'queued'], 201),
-        ]);
-        $admin = $this->createAdmin();
+        Queue::fake();
         $contact = SupportContact::create([
-            'channel' => 'whatsapp',
-            'external_id' => '+256704444444',
-            'phone' => '+256704444444',
+            'channel' => 'platform',
+            'external_id' => 'user:legacy-ai-only',
         ]);
         $conversation = SupportConversation::create([
             'public_id' => (string) Str::uuid(),
             'contact_id' => $contact->id,
+            'status' => 'waiting_human',
+            'mode' => 'waiting_human',
+            'human_requested_at' => now(),
+        ]);
+        $incoming = SupportMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'sender_type' => 'customer',
+            'body' => 'hello',
+            'provider_message_id' => 'platform:legacy-ai-only',
         ]);
 
-        $this->withHeaders($admin['headers'])
-            ->postJson("/api/support/admin/conversations/{$conversation->id}/reply", ['body' => 'We are checking this for you.'])
-            ->assertCreated()
-            ->assertJsonPath('sender_type', 'human');
+        $migration = require database_path('migrations/2026_10_02_000001_convert_support_to_ai_only.php');
+        $migration->up();
 
-        $this->assertSame('human', $conversation->fresh()->mode);
-        $this->assertDatabaseCount('support_daily_usages', 0);
-        Http::assertSent(fn ($request) => $request['To'] === 'whatsapp:+256704444444');
+        $conversation->refresh();
+        $this->assertSame('ai', $conversation->mode);
+        $this->assertSame('open', $conversation->status);
+        $this->assertNull($conversation->human_requested_at);
+        Queue::assertPushed(ProcessSupportMessage::class, fn ($job) => $job->messageId === $incoming->id);
     }
 
     public function test_signed_receipt_is_available_only_for_confirmed_payment(): void
@@ -302,7 +310,6 @@ class SupportSystemTest extends TestCase
                                 'priority' => 'normal',
                                 'action' => 'answer',
                                 'summary' => 'Customer payment is confirmed.',
-                                'requires_human' => false,
                                 'resolved' => true,
                             ]),
                         ]],
@@ -406,8 +413,8 @@ class SupportSystemTest extends TestCase
         SupportConversation::create([
             'public_id' => (string) Str::uuid(),
             'contact_id' => $contact->id,
-            'status' => 'waiting_human',
-            'mode' => 'waiting_human',
+            'status' => 'open',
+            'mode' => 'ai',
             'category' => 'complaint',
             'sentiment' => 'frustrated',
             'priority' => 'high',
@@ -431,7 +438,7 @@ class SupportSystemTest extends TestCase
             ->assertOk()
             ->assertJsonPath('summary.total_conversations', 2)
             ->assertJsonPath('summary.feedback_signals', 2)
-            ->assertJsonPath('summary.escalated', 1)
+            ->assertJsonPath('summary.escalated', 0)
             ->assertJsonPath('summary.negative', 1)
             ->assertJsonPath('by_category.complaint.count', 1)
             ->assertJsonPath('by_category.suggestion.count', 1)
@@ -521,7 +528,6 @@ class SupportSystemTest extends TestCase
                             'priority' => 'normal',
                             'action' => 'answer',
                             'summary' => 'Customer needs subscription navigation help.',
-                            'requires_human' => false,
                             'resolved' => false,
                         ]),
                     ]],
@@ -536,8 +542,51 @@ class SupportSystemTest extends TestCase
         $reply = SupportMessage::where('direction', 'outbound')->firstOrFail();
         $this->assertSame('delivered', $reply->delivery_status);
         $this->assertSame($incoming->id, $reply->metadata['in_reply_to']);
+        $this->assertSame('ai', $conversation->fresh()->mode);
+        $this->assertSame('open', $conversation->fresh()->status);
         $this->assertDatabaseCount('support_messages', 2);
         Http::assertNotSent(fn ($request) => str_contains($request->url(), 'api.twilio.com'));
+    }
+
+    public function test_openai_failure_keeps_platform_conversation_available_for_ai_retry(): void
+    {
+        config()->set('services.openai.api_key', 'openai-test-key');
+        config()->set('services.openai.base_url', 'https://api.openai.test/v1');
+        $account = $this->createUser('0707777777');
+        $contact = SupportContact::create([
+            'user_id' => $account['user']->id,
+            'channel' => 'platform',
+            'external_id' => 'user:'.$account['user']->id,
+            'phone' => $account['user']->phone,
+        ]);
+        $conversation = SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+        ]);
+        $incoming = SupportMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'sender_type' => 'customer',
+            'body' => 'Please check again.',
+            'provider_message_id' => 'platform:failed-openai-message',
+        ]);
+
+        Http::fake([
+            'api.openai.test/*' => Http::response([
+                'error' => ['code' => 'server_is_overloaded'],
+            ], 503, ['x-request-id' => 'req_test_failure']),
+        ]);
+
+        dispatch_sync(new ProcessSupportMessage($incoming->id));
+
+        $conversation->refresh();
+        $this->assertSame('ai', $conversation->mode);
+        $this->assertSame('open', $conversation->status);
+        $this->assertNull($conversation->human_requested_at);
+        $this->assertSame(
+            config('support.greeting')."\n\n".config('support.fallback_message'),
+            SupportMessage::where('direction', 'outbound')->firstOrFail()->body,
+        );
     }
 
     private function signature(string $url, array $params): string

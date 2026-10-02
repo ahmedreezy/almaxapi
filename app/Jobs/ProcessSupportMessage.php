@@ -44,8 +44,17 @@ class ProcessSupportMessage implements ShouldQueue
 
         $conversation = $incoming->conversation;
         $contact = $conversation->contact;
-        if (! $contact || $contact->blocked || $conversation->mode !== 'ai' || $conversation->status === 'resolved') {
+        if (! $contact || $contact->blocked || $conversation->status === 'resolved') {
             return;
+        }
+
+        if ($conversation->mode !== 'ai' || in_array($conversation->status, ['waiting_human', 'human'], true)) {
+            $conversation->update([
+                'mode' => 'ai',
+                'status' => 'open',
+                'assigned_admin_id' => null,
+                'human_requested_at' => null,
+            ]);
         }
 
         if ((int) data_get($incoming->metadata, 'num_media', 0) > 0 && trim($incoming->body) === '') {
@@ -68,23 +77,21 @@ class ProcessSupportMessage implements ShouldQueue
             $usage = $result;
 
             $conversation->refresh();
-            if ($conversation->mode === 'human' || $conversation->status === 'resolved') {
+            if ($conversation->status === 'resolved') {
                 $quota->release($contact, $result['input_tokens'], $result['output_tokens']);
 
                 return;
             }
 
-            $requiresHuman = (bool) $result['requires_human']
-                || $result['action'] === 'request_human'
-                || $conversation->mode === 'waiting_human';
             $conversation->update([
                 'category' => $result['category'],
                 'sentiment' => $result['sentiment'],
                 'priority' => $result['priority'],
                 'summary' => mb_substr($result['summary'], 0, 2000),
-                'mode' => $requiresHuman ? 'waiting_human' : $conversation->mode,
-                'status' => $requiresHuman ? 'waiting_human' : 'open',
-                'human_requested_at' => $requiresHuman ? ($conversation->human_requested_at ?? now()) : $conversation->human_requested_at,
+                'mode' => 'ai',
+                'status' => 'open',
+                'assigned_admin_id' => null,
+                'human_requested_at' => null,
                 'resolved_at' => $result['resolved'] ? now() : null,
             ]);
 
@@ -118,10 +125,11 @@ class ProcessSupportMessage implements ShouldQueue
         } catch (Throwable $e) {
             $quota->release($contact, (int) ($usage['input_tokens'] ?? 0), (int) ($usage['output_tokens'] ?? 0));
             $conversation->update([
-                'mode' => 'waiting_human',
-                'status' => 'waiting_human',
+                'mode' => 'ai',
+                'status' => 'open',
                 'priority' => 'high',
-                'human_requested_at' => $conversation->human_requested_at ?? now(),
+                'assigned_admin_id' => null,
+                'human_requested_at' => null,
             ]);
             Log::error('Support message processing failed', [
                 'message_id' => $incoming->id,

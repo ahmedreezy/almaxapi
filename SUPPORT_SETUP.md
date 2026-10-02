@@ -2,7 +2,7 @@
 
 The Laravel API now receives Twilio WhatsApp messages, processes them through
 OpenAI, allows customer-scoped account lookups, enforces daily reply limits,
-and exposes admin APIs for human takeover and knowledge management.
+and exposes admin APIs for knowledge and conversation management.
 
 Accounts and services required:
 
@@ -153,7 +153,7 @@ composer install
 
 The test environment uses an in-memory SQLite database. The suite verifies
 Twilio request signatures, rejection of invalid signatures, duplicate-message
-idempotency, queue dispatch, daily quotas, human takeover, mocked outbound
+idempotency, queue dispatch, daily quotas, AI-only recovery, mocked outbound
 Twilio requests, mocked OpenAI tool calls, and the required Almax greeting.
 
 ### B. Prepare the local Laravel application
@@ -378,22 +378,20 @@ Example published article body:
 Create separate `lg` articles for approved Luganda wording. Draft articles are
 never sent to the model.
 
-## 7. Human takeover and monitoring
+## 7. AI-only conversation monitoring
 
 Admin endpoints:
 
 - `GET /api/support/admin/conversations`
 - `GET /api/support/admin/conversations/{id}`
 - `PATCH /api/support/admin/conversations/{id}`
-- `POST /api/support/admin/conversations/{id}/reply`
 - `GET /api/support/admin/metrics`
 
-Set `mode` to `human` to stop automated replies. An admin reply automatically
-sets this mode. Set `mode` back to `ai` to return control, or set `status` to
-`resolved` to close the case. Human messages do not consume the customer's AI
-allowance. Set `dailyLimit` on the conversation update endpoint to override the
-global allowance for that contact; use `null` to restore the global default or
-`0` to disable AI replies for that contact.
+All active conversations run in `ai` mode. Set `status` to `resolved` to close
+a conversation. Set `dailyLimit` on the conversation update endpoint to
+override the global allowance for that contact; use `null` to restore the
+global default or `0` to disable AI replies for that contact. A failed OpenAI
+request leaves the conversation open in AI mode so the customer can retry.
 
 Monitor:
 

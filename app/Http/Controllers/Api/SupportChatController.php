@@ -60,6 +60,15 @@ class SupportChatController extends Controller
             ->first();
 
         if ($conversation) {
+            if ($conversation->mode !== 'ai' || in_array($conversation->status, ['waiting_human', 'human'], true)) {
+                $conversation->update([
+                    'mode' => 'ai',
+                    'status' => 'open',
+                    'assigned_admin_id' => null,
+                    'human_requested_at' => null,
+                ]);
+            }
+
             $latest = $conversation->messages()->latest('id')->first();
             if ($latest?->direction === 'inbound') {
                 return response()->json([
@@ -117,7 +126,8 @@ class SupportChatController extends Controller
             'id' => $conversation->public_id,
             'status' => $conversation->status,
             'mode' => $conversation->mode,
-            'waitingForReply' => $messages->last()?->direction === 'inbound',
+            'waitingForReply' => $conversation->status !== 'resolved'
+                && $messages->last()?->direction === 'inbound',
             'messages' => $messages->map(fn (SupportMessage $message) => [
                 'id' => $message->id,
                 'sender' => $message->direction === 'inbound' ? 'user' : 'support',

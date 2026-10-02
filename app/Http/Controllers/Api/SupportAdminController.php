@@ -5,18 +5,15 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\SupportConversation;
 use App\Models\SupportDailyUsage;
-use App\Models\SupportMessage;
-use App\Services\Support\TwilioWhatsAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class SupportAdminController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'status' => ['sometimes', 'string', 'in:open,waiting_human,human,resolved'],
+            'status' => ['sometimes', 'string', 'in:open,resolved'],
             'category' => ['sometimes', 'string', 'max:50'],
             'priority' => ['sometimes', 'string', 'in:low,normal,high,urgent'],
             'search' => ['sometimes', 'string', 'max:100'],
@@ -56,11 +53,10 @@ class SupportAdminController extends Controller
     public function update(Request $request, SupportConversation $conversation): JsonResponse
     {
         $data = $request->validate([
-            'mode' => ['sometimes', 'string', 'in:ai,waiting_human,human'],
-            'status' => ['sometimes', 'string', 'in:open,waiting_human,human,resolved'],
+            'mode' => ['sometimes', 'string', 'in:ai'],
+            'status' => ['sometimes', 'string', 'in:open,resolved'],
             'category' => ['sometimes', 'string', 'in:payment,subscription,account,prediction_content,technical,complaint,suggestion,other'],
             'priority' => ['sometimes', 'string', 'in:low,normal,high,urgent'],
-            'assignedAdminId' => ['sometimes', 'nullable', 'integer', 'exists:admin_users,id'],
             'summary' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'dailyLimit' => ['sometimes', 'nullable', 'integer', 'min:0', 'max:1000'],
         ]);
@@ -70,66 +66,20 @@ class SupportAdminController extends Controller
             unset($data['dailyLimit']);
         }
 
-        if (array_key_exists('assignedAdminId', $data)) {
-            $data['assigned_admin_id'] = $data['assignedAdminId'];
-            unset($data['assignedAdminId']);
-        }
         if (($data['status'] ?? null) === 'resolved') {
             $data['resolved_at'] = now();
         } elseif (isset($data['status'])) {
             $data['resolved_at'] = null;
         }
-        if (($data['mode'] ?? null) === 'human') {
-            $data['status'] = 'human';
-            $data['assigned_admin_id'] ??= $request->user()?->id;
-        }
-        if (($data['mode'] ?? null) === 'waiting_human') {
-            $data['status'] = 'waiting_human';
-            $data['human_requested_at'] = $conversation->human_requested_at ?? now();
-        }
         if (($data['mode'] ?? null) === 'ai' && $conversation->status !== 'resolved') {
             $data['status'] = 'open';
+            $data['assigned_admin_id'] = null;
+            $data['human_requested_at'] = null;
         }
 
         $conversation->update($data);
 
         return response()->json($conversation->fresh(['contact.user', 'assignedAdmin']));
-    }
-
-    public function reply(
-        Request $request,
-        SupportConversation $conversation,
-        TwilioWhatsAppService $twilio
-    ): JsonResponse {
-        $data = $request->validate(['body' => ['required', 'string', 'max:1500']]);
-        $conversation->loadMissing('contact');
-        $sent = $conversation->contact->channel === 'platform'
-            ? ['sid' => '', 'status' => 'delivered']
-            : $twilio->sendText(
-                $conversation->contact->phone ?: $conversation->contact->external_id,
-                $data['body']
-            );
-
-        $message = DB::transaction(function () use ($request, $conversation, $data, $sent) {
-            $conversation->update([
-                'mode' => 'human',
-                'status' => 'human',
-                'assigned_admin_id' => $conversation->assigned_admin_id ?: $request->user()?->id,
-                'last_message_at' => now(),
-            ]);
-
-            return SupportMessage::create([
-                'conversation_id' => $conversation->id,
-                'direction' => 'outbound',
-                'sender_type' => 'human',
-                'body' => $data['body'],
-                'provider_message_id' => $sent['sid'] ?: null,
-                'delivery_status' => $sent['status'],
-                'sent_at' => now(),
-            ]);
-        });
-
-        return response()->json($message, 201);
     }
 
     public function metrics(): JsonResponse

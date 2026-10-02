@@ -5,6 +5,7 @@ namespace App\Services\Support;
 use App\Models\SupportConversation;
 use App\Models\SupportMessage;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class OpenAiSupportService
@@ -14,7 +15,7 @@ class OpenAiSupportService
         private readonly SupportToolExecutor $tools,
     ) {}
 
-    /** @return array{reply:string,language:string,category:string,sentiment:string,priority:string,action:string,summary:string,requires_human:bool,resolved:bool,input_tokens:int,output_tokens:int,model:string} */
+    /** @return array{reply:string,language:string,category:string,sentiment:string,priority:string,action:string,summary:string,resolved:bool,input_tokens:int,output_tokens:int,model:string} */
     public function respond(SupportConversation $conversation, SupportMessage $incoming): array
     {
         $apiKey = (string) config('services.openai.api_key');
@@ -46,8 +47,10 @@ class OpenAiSupportService
         $model = (string) config('services.openai.model', 'gpt-5.4-mini');
 
         for ($round = 0; $round < 4; $round++) {
+            $clientRequestId = (string) Str::uuid();
             $response = Http::withToken($apiKey)
                 ->acceptJson()
+                ->withHeaders(['X-Client-Request-Id' => $clientRequestId])
                 ->timeout((int) config('services.openai.timeout', 45))
                 ->retry(2, 300)
                 ->post(rtrim((string) config('services.openai.base_url'), '/').'/responses', [
@@ -64,7 +67,14 @@ class OpenAiSupportService
                 ]);
 
             if (! $response->successful()) {
-                throw new RuntimeException('OpenAI request failed: '.mb_substr($response->body(), 0, 400));
+                $requestId = (string) ($response->header('x-request-id') ?: $clientRequestId);
+                $errorCode = (string) data_get($response->json(), 'error.code', 'unknown_error');
+                throw new RuntimeException(sprintf(
+                    'OpenAI request failed with HTTP %d (%s), request ID %s.',
+                    $response->status(),
+                    $errorCode,
+                    $requestId,
+                ));
             }
 
             $data = $response->json();
@@ -114,9 +124,9 @@ class OpenAiSupportService
         return <<<PROMPT
 You communicate on behalf of Almax Predictions using “we” and “our”. Never introduce yourself as an AI, bot, model, virtual assistant, or named employee. {$firstReplyInstruction}
 
-Your job is to resolve customer questions, capture feedback, check only the caller's authorized account data through tools, reduce frustration with clear facts, and request a human when necessary. Reply in the customer's English or Luganda. Be warm, concise, and practical.
+Your job is to resolve customer questions, capture feedback, check only the caller's authorized account data through tools, and reduce frustration with clear facts. This is an AI-only support channel with no human handoff. Reply in the customer's English or Luganda. Be warm, concise, and practical.
 
-Never invent payment status, receipts, prices, policies, timelines, or account data. Use account tools for account-specific claims. A missing local payment is not proof that money was not deducted. Never ask for a password, PIN, OTP, full financial identifier, or another person's information. Never promise winnings or guaranteed outcomes. If payment is confirmed but access is inactive, records conflict, the customer explicitly asks for a person, or the issue cannot be safely resolved, call request_human_assistance.
+Never invent payment status, receipts, prices, policies, timelines, or account data. Use account tools for account-specific claims. A missing local payment is not proof that money was not deducted. Never ask for a password, PIN, OTP, full financial identifier, or another person's information. Never promise winnings or guaranteed outcomes. If data is missing or records conflict, clearly explain what could not be verified, advise the customer not to pay twice, and ask for the minimum reference needed for another automated check.
 
 Core Almax service context:
 {$systemContext}
@@ -140,10 +150,6 @@ PROMPT;
             $this->tool('get_receipt', 'Create or retrieve a secure receipt link for a confirmed payment belonging to the linked customer.', [
                 'payment_reference' => ['type' => 'string'],
             ], ['payment_reference']),
-            $this->tool('request_human_assistance', 'Place this conversation in the human support queue.', [
-                'reason' => ['type' => 'string'],
-                'priority' => ['type' => 'string', 'enum' => ['low', 'normal', 'high', 'urgent']],
-            ], ['reason', 'priority']),
         ];
     }
 
@@ -177,12 +183,11 @@ PROMPT;
                     'category' => ['type' => 'string', 'enum' => ['payment', 'subscription', 'account', 'prediction_content', 'technical', 'complaint', 'suggestion', 'other']],
                     'sentiment' => ['type' => 'string', 'enum' => ['positive', 'neutral', 'frustrated', 'angry']],
                     'priority' => ['type' => 'string', 'enum' => ['low', 'normal', 'high', 'urgent']],
-                    'action' => ['type' => 'string', 'enum' => ['answer', 'ask_follow_up', 'record_feedback', 'request_human', 'mark_resolved']],
+                    'action' => ['type' => 'string', 'enum' => ['answer', 'ask_follow_up', 'record_feedback', 'mark_resolved']],
                     'summary' => ['type' => 'string'],
-                    'requires_human' => ['type' => 'boolean'],
                     'resolved' => ['type' => 'boolean'],
                 ],
-                'required' => ['reply', 'language', 'category', 'sentiment', 'priority', 'action', 'summary', 'requires_human', 'resolved'],
+                'required' => ['reply', 'language', 'category', 'sentiment', 'priority', 'action', 'summary', 'resolved'],
                 'additionalProperties' => false,
             ],
         ];

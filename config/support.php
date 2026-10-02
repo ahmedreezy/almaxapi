@@ -9,7 +9,7 @@ return [
     'knowledge_articles' => (int) env('SUPPORT_KNOWLEDGE_ARTICLES', 8),
     'retention_days' => (int) env('SUPPORT_MESSAGE_RETENTION_DAYS', 365),
     'greeting' => 'Hello, this is Almax Predictions. How can we help you today?',
-    'limit_message' => 'You have reached today\'s automated reply limit. We have saved your messages and a member of our team can continue assisting you.',
-    'fallback_message' => 'We have saved your message, but we cannot complete the automated check right now. A member of our team will assist you.',
+    'limit_message' => 'You have reached today\'s automated reply limit. Please try again tomorrow when your AI support allowance resets.',
+    'fallback_message' => 'We could not complete that automated check right now. Please send your message again in a moment so we can retry.',
     'text_only_message' => 'Please send your feedback or question as a text message so we can assist you.',
 ];
