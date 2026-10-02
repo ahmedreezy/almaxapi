@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\SupportConversation;
 use App\Models\SupportMessage;
 use App\Services\Support\OpenAiSupportService;
+use App\Services\Support\SupportFastReplyService;
 use App\Services\Support\SupportQuotaService;
 use App\Services\Support\TwilioWhatsAppService;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -24,13 +25,14 @@ class ProcessSupportMessage implements ShouldQueue
 
     public function __construct(public readonly int $messageId)
     {
-        $this->tries = max(1, (int) config('support.job_tries', 2));
-        $this->timeout = max(30, (int) config('support.job_timeout', 240));
+        $this->tries = max(1, (int) config('support.job_tries', 1));
+        $this->timeout = max(30, (int) config('support.job_timeout', 60));
         $this->onQueue('support');
     }
 
     public function handle(
         OpenAiSupportService $agent,
+        SupportFastReplyService $fastReplies,
         SupportQuotaService $quota,
         TwilioWhatsAppService $twilio,
     ): void {
@@ -51,6 +53,18 @@ class ProcessSupportMessage implements ShouldQueue
         if (! $contact || $contact->blocked || $conversation->status === 'resolved') {
             return;
         }
+
+        $jobStartedAt = now();
+        $jobStartedNs = hrtime(true);
+        $receivedAt = $incoming->sent_at ?? $incoming->created_at;
+        $queueWaitMs = $receivedAt ? (int) max(0, $receivedAt->diffInMilliseconds($jobStartedAt)) : null;
+
+        Log::info('Support message processing started', [
+            'message_id' => $incoming->id,
+            'conversation_id' => $conversation->id,
+            'channel' => $contact->channel,
+            'queue_wait_ms' => $queueWaitMs,
+        ]);
 
         if ($conversation->mode !== 'ai' || in_array($conversation->status, ['waiting_human', 'human'], true)) {
             $conversation->update([
@@ -78,7 +92,8 @@ class ProcessSupportMessage implements ShouldQueue
 
         $usage = ['input_tokens' => 0, 'output_tokens' => 0];
         try {
-            $result = $agent->respond($conversation, $incoming);
+            $result = $fastReplies->respond($conversation, $incoming)
+                ?? $agent->respond($conversation, $incoming);
             $usage = $result;
 
             $conversation->refresh();
@@ -107,6 +122,15 @@ class ProcessSupportMessage implements ShouldQueue
             $reply = trim($result['reply']);
 
             $sent = $this->deliver($conversation, $twilio, $reply);
+            $processingMs = (int) round((hrtime(true) - $jobStartedNs) / 1_000_000);
+            $totalResponseMs = $receivedAt
+                ? (int) max(0, $receivedAt->diffInMilliseconds(now()))
+                : $processingMs;
+            $performance = array_merge([
+                'queue_wait_ms' => $queueWaitMs,
+                'processing_ms' => $processingMs,
+                'total_response_ms' => $totalResponseMs,
+            ], (array) ($result['performance'] ?? []));
             SupportMessage::create([
                 'conversation_id' => $conversation->id,
                 'direction' => 'outbound',
@@ -114,7 +138,11 @@ class ProcessSupportMessage implements ShouldQueue
                 'body' => $reply,
                 'provider_message_id' => $sent['sid'] ?: null,
                 'delivery_status' => $sent['status'],
-                'metadata' => ['action' => $result['action'], 'in_reply_to' => $incoming->id],
+                'metadata' => [
+                    'action' => $result['action'],
+                    'in_reply_to' => $incoming->id,
+                    'performance' => $performance,
+                ],
                 'input_tokens' => $result['input_tokens'],
                 'output_tokens' => $result['output_tokens'],
                 'model' => $result['model'],
@@ -122,6 +150,13 @@ class ProcessSupportMessage implements ShouldQueue
             ]);
             $conversation->update(['last_message_at' => now()]);
             $quota->consume($contact, $result['input_tokens'], $result['output_tokens']);
+
+            Log::info('Support message processing completed', [
+                'message_id' => $incoming->id,
+                'conversation_id' => $conversation->id,
+                'model' => $result['model'],
+                ...$performance,
+            ]);
         } catch (Throwable $e) {
             $quota->release($contact, (int) ($usage['input_tokens'] ?? 0), (int) ($usage['output_tokens'] ?? 0));
             $conversation->update([
@@ -134,6 +169,8 @@ class ProcessSupportMessage implements ShouldQueue
             Log::error('Support message processing failed', [
                 'message_id' => $incoming->id,
                 'conversation_id' => $conversation->id,
+                'queue_wait_ms' => $queueWaitMs,
+                'processing_ms' => (int) round((hrtime(true) - $jobStartedNs) / 1_000_000),
                 'error' => $e->getMessage(),
             ]);
 

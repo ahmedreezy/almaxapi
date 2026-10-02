@@ -4,7 +4,10 @@ namespace App\Services\Support;
 
 use App\Models\SupportConversation;
 use App\Models\SupportMessage;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -45,29 +48,46 @@ class OpenAiSupportService
         $totalInput = 0;
         $totalOutput = 0;
         $model = (string) config('services.openai.model', 'gpt-5.4-mini');
+        $startedNs = hrtime(true);
+        $requestIds = [];
+        $requestAttempts = 0;
+        $roundsCompleted = 0;
 
-        for ($round = 0; $round < 4; $round++) {
+        for ($round = 0; $round < max(1, (int) config('support.openai_max_rounds', 3)); $round++) {
             $clientRequestId = (string) Str::uuid();
-            $response = Http::withToken($apiKey)
-                ->acceptJson()
-                ->withHeaders(['X-Client-Request-Id' => $clientRequestId])
-                ->timeout((int) config('services.openai.timeout', 45))
-                ->retry(2, 300)
-                ->post(rtrim((string) config('services.openai.base_url'), '/').'/responses', [
-                    'model' => $model,
-                    'instructions' => $instructions,
-                    'input' => $input,
-                    'tools' => $this->toolDefinitions(),
-                    'tool_choice' => 'auto',
-                    'parallel_tool_calls' => false,
-                    'store' => false,
-                    'max_output_tokens' => (int) config('support.max_output_tokens', 800),
-                    'safety_identifier' => hash('sha256', 'support-contact-'.$conversation->contact_id),
-                    'text' => ['format' => $this->outputFormat()],
-                ]);
+            $roundStartedNs = hrtime(true);
+            [$response, $attempts] = $this->request($apiKey, $clientRequestId, $startedNs, [
+                'model' => $model,
+                'instructions' => $instructions,
+                'input' => $input,
+                'tools' => $this->toolDefinitions(),
+                'tool_choice' => 'auto',
+                'parallel_tool_calls' => false,
+                'store' => false,
+                'max_output_tokens' => (int) config('support.max_output_tokens', 350),
+                'safety_identifier' => hash('sha256', 'support-contact-'.$conversation->contact_id),
+                'reasoning' => ['effort' => (string) config('services.openai.reasoning_effort', 'none')],
+                'text' => [
+                    'verbosity' => (string) config('services.openai.verbosity', 'low'),
+                    'format' => $this->outputFormat(),
+                ],
+            ]);
+            $requestAttempts += $attempts;
+            $roundsCompleted++;
+            $requestId = (string) ($response->header('x-request-id') ?: $clientRequestId);
+            $requestIds[] = $requestId;
+
+            Log::info('Support OpenAI round completed', [
+                'message_id' => $incoming->id,
+                'conversation_id' => $conversation->id,
+                'round' => $round + 1,
+                'attempts' => $attempts,
+                'duration_ms' => (int) round((hrtime(true) - $roundStartedNs) / 1_000_000),
+                'request_id' => $requestId,
+                'status' => $response->status(),
+            ]);
 
             if (! $response->successful()) {
-                $requestId = (string) ($response->header('x-request-id') ?: $clientRequestId);
                 $errorCode = (string) data_get($response->json(), 'error.code', 'unknown_error');
                 throw new RuntimeException(sprintf(
                     'OpenAI request failed with HTTP %d (%s), request ID %s.',
@@ -90,6 +110,13 @@ class OpenAiSupportService
                     'input_tokens' => $totalInput,
                     'output_tokens' => $totalOutput,
                     'model' => (string) ($data['model'] ?? $model),
+                    'performance' => [
+                        'source' => 'openai',
+                        'openai_rounds' => $roundsCompleted,
+                        'openai_attempts' => $requestAttempts,
+                        'openai_ms' => (int) round((hrtime(true) - $startedNs) / 1_000_000),
+                        'openai_request_ids' => $requestIds,
+                    ],
                 ]);
             }
 
@@ -112,6 +139,67 @@ class OpenAiSupportService
         }
 
         throw new RuntimeException('OpenAI exceeded the support tool-call limit.');
+    }
+
+    /** @return array{0:Response,1:int} */
+    private function request(string $apiKey, string $clientRequestId, int $startedNs, array $payload): array
+    {
+        $maxAttempts = max(1, (int) config('services.openai.max_attempts', 2));
+        $budgetMs = max(5_000, (int) config('support.openai_budget_seconds', 50) * 1000);
+        $lastConnectionError = null;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $elapsedMs = (int) round((hrtime(true) - $startedNs) / 1_000_000);
+            $remainingMs = $budgetMs - $elapsedMs;
+            if ($remainingMs < 2_000) {
+                throw new RuntimeException('OpenAI exceeded the support response time budget.');
+            }
+
+            $timeout = max(1, min(
+                (int) config('services.openai.timeout', 20),
+                (int) floor($remainingMs / 1000)
+            ));
+
+            try {
+                $response = Http::withToken($apiKey)
+                    ->acceptJson()
+                    ->withHeaders(['X-Client-Request-Id' => $clientRequestId])
+                    ->connectTimeout(min($timeout, max(1, (int) config('services.openai.connect_timeout', 5))))
+                    ->timeout($timeout)
+                    ->post(rtrim((string) config('services.openai.base_url'), '/').'/responses', $payload);
+            } catch (ConnectionException $exception) {
+                $lastConnectionError = $exception;
+                if ($attempt >= $maxAttempts) {
+                    throw $exception;
+                }
+
+                usleep($this->retryDelayMicroseconds($attempt));
+
+                continue;
+            }
+
+            if ($response->successful() || ! $this->isTransient($response) || $attempt >= $maxAttempts) {
+                return [$response, $attempt];
+            }
+
+            usleep($this->retryDelayMicroseconds($attempt));
+        }
+
+        if ($lastConnectionError) {
+            throw $lastConnectionError;
+        }
+
+        throw new RuntimeException('OpenAI request failed without a response.');
+    }
+
+    private function isTransient(Response $response): bool
+    {
+        return $response->status() === 429 || $response->serverError();
+    }
+
+    private function retryDelayMicroseconds(int $attempt): int
+    {
+        return (200 * $attempt + random_int(0, 150)) * 1000;
     }
 
     private function instructions(string $systemContext, string $knowledge, bool $firstReply): string

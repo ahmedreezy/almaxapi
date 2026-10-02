@@ -16,7 +16,7 @@ Write-Host "[queue] Starting Almax queue worker in $apiDir" -ForegroundColor Cya
 while ($true) {
     Write-Host "[queue] Launching support worker" -ForegroundColor Yellow
     $proc = Start-Process -FilePath $phpPath `
-                          -ArgumentList "artisan", "queue:work", "database", "--queue=support,default", "--sleep=3", "--tries=2", "--timeout=240", "--max-time=3600" `
+                          -ArgumentList "artisan", "queue:work", "database", "--queue=support", "--sleep=1", "--tries=1", "--timeout=60", "--max-time=3600" `
                           -WorkingDirectory $apiDir `
                           -NoNewWindow -PassThru -Wait
     Write-Host "[queue] Worker exited with code $($proc.ExitCode). Restarting in 5 seconds..." -ForegroundColor Red

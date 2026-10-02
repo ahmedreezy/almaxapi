@@ -29,14 +29,23 @@ TWILIO_STATUS_WEBHOOK_URL=https://almaxpredictions.com/api/support/twilio/status
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.4-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_TIMEOUT_SECONDS=45
+OPENAI_TIMEOUT_SECONDS=20
+OPENAI_CONNECT_TIMEOUT_SECONDS=5
+OPENAI_MAX_ATTEMPTS=2
+OPENAI_REASONING_EFFORT=none
+OPENAI_VERBOSITY=low
 
 SUPPORT_DAILY_REPLY_LIMIT=10
 SUPPORT_TIMEZONE=Africa/Kampala
-SUPPORT_MAX_OUTPUT_TOKENS=800
+SUPPORT_MAX_OUTPUT_TOKENS=350
 SUPPORT_HISTORY_MESSAGES=10
 SUPPORT_KNOWLEDGE_ARTICLES=8
 SUPPORT_MESSAGE_RETENTION_DAYS=365
+SUPPORT_JOB_TIMEOUT_SECONDS=60
+SUPPORT_JOB_TRIES=1
+SUPPORT_OPENAI_BUDGET_SECONDS=50
+SUPPORT_OPENAI_MAX_ROUNDS=3
+DB_QUEUE_RETRY_AFTER=90
 ```
 
 Run:
@@ -52,14 +61,22 @@ php artisan route:cache
 Run a continuously supervised worker when the host supports it:
 
 ```bash
-php artisan queue:work database --queue=support,default --sleep=1 --tries=2 --timeout=240 --max-time=3600
+php artisan queue:work database --queue=support --sleep=1 --tries=1 --timeout=60 --max-time=3600
 ```
+
+For Supervisor, copy `scripts/almax-support-worker.conf.example`, replace the
+PHP and application paths, and load it through Supervisor or the hosting
+process manager.
 
 If cPanel cannot supervise a permanent process, add this cron every minute:
 
 ```cron
-* * * * * cd /absolute/path/to/almaxapi && php artisan queue:work database --queue=support,default --stop-when-empty --tries=2 --timeout=240 >> /dev/null 2>&1
+* * * * * cd /absolute/path/to/almaxapi && php artisan queue:work database --queue=support --stop-when-empty --tries=1 --timeout=60 >> /dev/null 2>&1
 ```
+
+The cron form is a fallback only and can add almost 60 seconds before a reply
+starts. Interactive platform chat should use Supervisor, systemd, or the cPanel
+Process Manager to keep the worker running continuously.
 
 Keep the existing scheduler cron as well:
 
@@ -185,6 +202,11 @@ TWILIO_WHATSAPP_FROM=the_sender_shown_in_your_twilio_sandbox
 OPENAI_API_KEY=your_openai_project_api_key
 OPENAI_MODEL=gpt-5.4-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_TIMEOUT_SECONDS=20
+OPENAI_CONNECT_TIMEOUT_SECONDS=5
+OPENAI_MAX_ATTEMPTS=2
+OPENAI_REASONING_EFFORT=none
+OPENAI_VERBOSITY=low
 ```
 
 The OpenAI account must have billing or credits enabled because
@@ -246,7 +268,7 @@ both Twilio Sandbox URLs, and run `php artisan config:clear` again.
 Keep Laravel and ngrok running. In a third terminal, start the queue worker:
 
 ```bash
-php artisan queue:work database --queue=support,default --sleep=1 --tries=2 --timeout=240
+php artisan queue:work database --queue=support --sleep=1 --tries=1 --timeout=60
 ```
 
 Send `Hello` from the joined WhatsApp phone to the Sandbox sender. A successful

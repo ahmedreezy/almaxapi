@@ -65,7 +65,14 @@ return [
         'api_key' => env('OPENAI_API_KEY', ''),
         'model' => env('OPENAI_MODEL', 'gpt-5.4-mini'),
         'base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-        'timeout' => (int) env('OPENAI_TIMEOUT_SECONDS', 45),
+        // Interactive support has a hard latency SLO. Legacy production env
+        // values are capped so an old 45-second setting cannot restore the
+        // multi-minute request path after deployment.
+        'timeout' => min(20, max(5, (int) env('OPENAI_TIMEOUT_SECONDS', 20))),
+        'connect_timeout' => min(5, max(1, (int) env('OPENAI_CONNECT_TIMEOUT_SECONDS', 5))),
+        'max_attempts' => min(2, max(1, (int) env('OPENAI_MAX_ATTEMPTS', 2))),
+        'reasoning_effort' => env('OPENAI_REASONING_EFFORT', 'none'),
+        'verbosity' => env('OPENAI_VERBOSITY', 'low'),
     ],
 
 ];

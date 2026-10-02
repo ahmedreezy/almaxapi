@@ -16,7 +16,8 @@ class SecurityAndHealthTest extends TestCase
     {
         $this->getJson('/api/health')
             ->assertStatus(200)
-            ->assertJson(['status' => 'ok']);
+            ->assertJson(['status' => 'ok'])
+            ->assertJsonStructure(['status', 'timestamp', 'timezone', 'release']);
     }
 
     // ─── Livescores ───────────────────────────────────────────────────────

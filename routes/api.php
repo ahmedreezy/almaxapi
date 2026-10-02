@@ -33,7 +33,12 @@ use Illuminate\Support\Facades\Route;
 */
 
 // ─── Health check ──────────────────────────────────────────────────────────
-Route::get('/health', fn () => response()->json(['status' => 'ok', 'timestamp' => now()->toISOString()]));
+Route::get('/health', fn () => response()->json([
+    'status' => 'ok',
+    'timestamp' => now()->toISOString(),
+    'timezone' => config('app.timezone'),
+    'release' => config('app.release', 'unknown'),
+]));
 
 // ─── Developer analytics (role:developer only) ────────────────────────────
 Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'])

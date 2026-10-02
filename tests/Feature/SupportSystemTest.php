@@ -285,6 +285,8 @@ class SupportSystemTest extends TestCase
                 $this->assertTrue(collect($request['tools'])->contains(
                     fn (array $tool) => ($tool['name'] ?? '') === 'get_available_packages'
                 ));
+                $this->assertSame('none', $request['reasoning']['effort']);
+                $this->assertSame('low', $request['text']['verbosity']);
                 $openAiCalls++;
                 if ($openAiCalls === 1) {
                     return Http::response([
@@ -335,6 +337,10 @@ class SupportSystemTest extends TestCase
         $this->assertTrue(SupportToolAudit::first()->successful);
         $this->assertSame('resolved', $conversation->fresh()->status);
         $this->assertSame(2, $openAiCalls);
+        $this->assertSame(2, $outbound->metadata['performance']['openai_rounds']);
+        $this->assertSame('openai', $outbound->metadata['performance']['source']);
+        $this->assertArrayHasKey('queue_wait_ms', $outbound->metadata['performance']);
+        $this->assertArrayHasKey('total_response_ms', $outbound->metadata['performance']);
     }
 
     public function test_available_packages_tool_returns_only_current_public_packages_without_paid_content(): void
@@ -387,6 +393,47 @@ class SupportSystemTest extends TestCase
             fn (array $item) => ! array_key_exists('betslip_link', $item)
                 && ! array_key_exists('betslip_code', $item)
         ));
+    }
+
+    public function test_package_purchase_question_uses_fast_reply_without_openai(): void
+    {
+        Http::fake();
+        Group::create([
+            'name' => 'Odds 2 Daily',
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'price' => 10000,
+            'is_active' => true,
+        ]);
+        $account = $this->createUser('0707777766');
+        $contact = SupportContact::create([
+            'user_id' => $account['user']->id,
+            'channel' => 'platform',
+            'external_id' => 'user:'.$account['user']->id,
+            'phone' => $account['user']->phone,
+        ]);
+        $conversation = SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+        ]);
+        $incoming = SupportMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'sender_type' => 'customer',
+            'body' => 'Can you help me purchase one?',
+            'sent_at' => now(),
+        ]);
+
+        dispatch_sync(new ProcessSupportMessage($incoming->id));
+
+        $reply = $conversation->messages()->where('direction', 'outbound')->firstOrFail();
+        $this->assertStringContainsString('Odds 2 Daily', $reply->body);
+        $this->assertStringContainsString('UGX 10,000', $reply->body);
+        $this->assertSame('deterministic-fast-path', $reply->model);
+        $this->assertSame('package_fast_path', $reply->metadata['performance']['source']);
+        $this->assertSame(0, $reply->metadata['performance']['openai_rounds']);
+        $this->assertDatabaseCount('support_tool_audits', 1);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'api.openai.com'));
     }
 
     public function test_baseline_support_knowledge_seeder_is_idempotent(): void
@@ -694,8 +741,8 @@ class SupportSystemTest extends TestCase
         $this->assertTrue(app(SupportQuotaService::class)->reserve($contact));
 
         $job = new ProcessSupportMessage($incoming->id);
-        $this->assertSame(240, $job->timeout);
-        $this->assertSame(2, $job->tries);
+        $this->assertSame(60, $job->timeout);
+        $this->assertSame(1, $job->tries);
         $this->assertTrue($job->failOnTimeout);
 
         $job->failed(new RuntimeException('Job timed out.'));

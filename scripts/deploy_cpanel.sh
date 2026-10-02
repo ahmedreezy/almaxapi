@@ -42,8 +42,11 @@ mkdir -p \
   storage/framework/sessions \
   storage/framework/testing \
   storage/framework/views \
+  storage/app \
   storage/logs
 chmod -R u+rwX bootstrap/cache storage
+
+git rev-parse --short=12 HEAD > storage/app/release
 
 echo "[1/7] Installing PHP dependencies without application scripts..."
 composer_log="$(mktemp "${TMPDIR:-/tmp}/almaxapi-composer.XXXXXX")"
