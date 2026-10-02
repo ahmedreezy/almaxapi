@@ -112,8 +112,19 @@ jobs:
             -i ~/.ssh/id_ed25519 -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" \
             bash -s -- "$API_DEPLOY_PATH" <<'REMOTE'
           set -euo pipefail
+          deploy_phase="initialize remote deployment"
+          report_failure() {
+            status=$?
+            trap - ERR
+            printf '::error title=Remote deployment failed::Phase "%s" failed with exit code %s.\n' \
+              "$deploy_phase" "$status"
+            exit "$status"
+          }
+          trap report_failure ERR
+
           api_path="$1"
 
+          deploy_phase="validate API checkout"
           if [[ ! -d "$api_path/.git" ]]; then
             echo "[error] API_DEPLOY_PATH is not a Git checkout: $api_path" >&2
             exit 1
@@ -130,6 +141,7 @@ jobs:
 
           if ! git diff --quiet -- . "${ignored_paths[@]}" || \
              ! git diff --cached --quiet -- . "${ignored_paths[@]}"; then
+            deploy_phase="archive server-side source changes"
             backup_root="$(dirname "$api_path")/.almaxapi-deploy-backups"
             backup_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
             mkdir -p "$backup_root"
@@ -147,6 +159,7 @@ jobs:
             echo "[warning] Recovery patches: $backup_root/${backup_stamp}-*.patch" >&2
           fi
 
+          deploy_phase="preserve runtime files"
           runtime_backup="$(mktemp -d "${TMPDIR:-/tmp}/almaxapi-runtime.XXXXXX")"
           cleanup() {
             rm -rf "$runtime_backup"
@@ -172,14 +185,18 @@ jobs:
             fi
           done
 
+          deploy_phase="fetch origin/main"
           git fetch --prune origin main
+          deploy_phase="reset checkout to origin/main"
           git checkout -f main
           git reset --hard origin/main
 
+          deploy_phase="restore runtime files"
           for path in "$runtime_backup/public"/*; do
             cp -a "$path" public/
           done
 
+          deploy_phase="run Laravel deployment script"
           bash scripts/deploy_cpanel.sh
           REMOTE
 

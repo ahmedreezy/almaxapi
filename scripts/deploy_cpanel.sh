@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+report_failure() {
+  status=$?
+  command="$BASH_COMMAND"
+  line="$1"
+  trap - ERR
+  printf '::error title=Laravel deployment failed::Line %s exited with code %s while running: %s\n' \
+    "$line" "$status" "$command"
+  exit "$status"
+}
+trap 'report_failure "$LINENO"' ERR
+
 echo ""
 echo "=========================================="
 echo " Laravel cPanel deploy: $(date)"
