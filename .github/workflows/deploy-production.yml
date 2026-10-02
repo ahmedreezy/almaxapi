@@ -1,0 +1,116 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Test API
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: newbet_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d newbet_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, pdo_pgsql
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Prepare test environment
+        run: |
+          cp .env.testing .env
+          php artisan key:generate --force
+
+      - name: Run tests
+        env:
+          DB_PASSWORD: postgres
+        run: php artisan test
+
+  deploy:
+    name: Deploy API to cPanel
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      API_DEPLOY_PATH: ${{ vars.API_DEPLOY_PATH }}
+      API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
+
+    steps:
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          : "${DEPLOY_HOST:?Missing DEPLOY_HOST production secret}"
+          : "${DEPLOY_USER:?Missing DEPLOY_USER production secret}"
+          : "${DEPLOY_SSH_KEY:?Missing DEPLOY_SSH_KEY production secret}"
+          : "${DEPLOY_KNOWN_HOSTS:?Missing DEPLOY_KNOWN_HOSTS production secret}"
+          : "${API_DEPLOY_PATH:?Missing API_DEPLOY_PATH production variable}"
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy API
+        shell: bash
+        run: |
+          port="${DEPLOY_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" \
+            bash -s -- "$API_DEPLOY_PATH" <<'REMOTE'
+          set -euo pipefail
+          api_path="$1"
+
+          test -d "$api_path/.git"
+          cd "$api_path"
+          git diff --quiet
+          git diff --cached --quiet
+          git fetch --prune origin main
+          git checkout main
+          git merge --ff-only origin/main
+          bash scripts/deploy_cpanel.sh
+          REMOTE
+
+      - name: Verify API health
+        if: ${{ env.API_HEALTH_URL != '' }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 "$API_HEALTH_URL" > /dev/null

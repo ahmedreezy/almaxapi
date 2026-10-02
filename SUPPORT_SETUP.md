@@ -158,6 +158,53 @@ Twilio requests, mocked OpenAI tool calls, and the required Almax greeting.
 
 ### B. Prepare the local Laravel application
 
+#### Windows PC with portable PostgreSQL
+
+The PowerShell helper uses the existing PostgreSQL connection and credentials
+from `.env`. Start the portable PostgreSQL instance with
+`../../almax/newbet-side/start-postgres.ps1` if it is stopped.
+From the backend directory, initialize the support tables and knowledge:
+
+```powershell
+./scripts/whatsapp-test.ps1 -Mode setup
+```
+
+Run each of these in a separate PowerShell terminal:
+
+```powershell
+./scripts/whatsapp-test.ps1 -Mode serve
+./scripts/whatsapp-test.ps1 -Mode proxy
+./scripts/whatsapp-test.ps1 -Mode tunnel
+./scripts/whatsapp-test.ps1 -Mode worker
+```
+
+The application listens on port 8000. The restricted proxy on port 8002
+accepts only POST requests to the two Twilio callback routes. The tunnel
+connects to port 8002. Its executable is the official Windows Cloudflare
+binary in `storage/app/whatsapp-runtime/cloudflared.exe`.
+
+The helper enables PHP cURL and exports the public root certificates already
+trusted by Windows into an ignored runtime folder. These PHP settings apply
+only to processes launched by the helper; certificate verification stays on.
+
+After starting a new tunnel, set `APP_URL` to its printed HTTPS origin and set
+the two `TWILIO_*_WEBHOOK_URL` values to that origin plus
+`/api/support/twilio/inbound` and `/api/support/twilio/status` respectively.
+Set those same URLs in Twilio, using POST. Restart the worker after changing
+credentials or URLs, then run:
+
+```powershell
+./scripts/whatsapp-test.ps1 -Mode doctor
+```
+
+This command checks configuration, not provider billing or account access.
+An OpenAI `credit_balance_exhausted` response must be resolved before an AI
+reply can be generated. Join the Twilio test environment from your phone
+using its displayed QR code or join message, then send `Hello`.
+
+The generic SQLite instructions below are an alternative setup; skip them
+when using the PostgreSQL helper above.
+
 Real secrets belong in `.env`, never `.env.example`. If `.env` does not exist,
 create it from the template, create the SQLite file, and initialize Laravel:
 

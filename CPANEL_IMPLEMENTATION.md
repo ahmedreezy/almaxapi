@@ -8,15 +8,15 @@ This runbook assumes:
 ## 1) Server folder layout
 
 Using your cPanel base path:
-- /home/almaxpredictions.com/almaxapi
-- /home/almaxpredictions.com/newbet-side
+- /home/farmsnva/almaxpredictions.com/almaxapi
+- /home/farmsnva/almaxpredictions.com/newbet-side
 
 ## 2) Initial backend deploy (Laravel)
 
 Run on server:
 
 ```bash
-cd /home/almaxpredictions.com
+cd /home/farmsnva/almaxpredictions.com
 # clone/update your backend repo into almaxapi
 cd almaxapi
 composer install --no-dev --optimize-autoloader
@@ -54,17 +54,17 @@ bash scripts/deploy_cpanel.sh
 
 In cPanel Domains, set almaxpredictions.com document root to:
 
-- /home/almaxpredictions.com/almaxapi/public
+- /home/farmsnva/almaxpredictions.com/almaxapi/public
 
 ## 4) Initial frontend deploy (Vue)
 
 Run on server:
 
 ```bash
-cd /home/almaxpredictions.com
+cd /home/farmsnva/almaxpredictions.com
 # clone/update your frontend repo into newbet-side
 cd newbet-side
-export LARAVEL_PUBLIC_DIR=/home/almaxpredictions.com/almaxapi/public
+export LARAVEL_PUBLIC_DIR=/home/farmsnva/almaxpredictions.com/almaxapi/public
 npm run deploy:cpanel
 ```
 
@@ -81,10 +81,32 @@ Open in browser:
 
 ## 6) Ongoing release commands
 
+Production deployment is automated by `.github/workflows/deploy-production.yml`
+in both repositories. A merge to `main` runs the repository tests and deploys
+that repository to cPanel over SSH.
+
+Create a GitHub environment named `production` in each repository and configure:
+
+- Secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
+  `DEPLOY_KNOWN_HOSTS`, and optionally `DEPLOY_PORT` (defaults to `22`).
+- Backend variables: `API_DEPLOY_PATH=/home/farmsnva/almaxpredictions.com/almaxapi`,
+  `API_HEALTH_URL=https://almaxpredictions.com/api/health`, and
+  `PRODUCTION_URL=https://almaxpredictions.com`.
+- Frontend variables:
+  `FRONTEND_DEPLOY_PATH=/home/farmsnva/almaxpredictions.com/newbet-side`,
+  `API_DEPLOY_PATH=/home/farmsnva/almaxpredictions.com/almaxapi`, and
+  `PRODUCTION_URL=https://almaxpredictions.com`.
+
+The SSH user must be able to read both server checkouts, pull their private
+GitHub repositories, and write Laravel's `public` and `storage` directories.
+The workflows stop instead of overwriting uncommitted server-side changes.
+
+The following commands remain available for a manual release:
+
 Backend release:
 
 ```bash
-cd /home/almaxpredictions.com/almaxapi
+cd /home/farmsnva/almaxpredictions.com/almaxapi
 git pull origin main
 bash scripts/deploy_cpanel.sh
 ```
@@ -92,9 +114,9 @@ bash scripts/deploy_cpanel.sh
 Frontend release:
 
 ```bash
-cd /home/almaxpredictions.com/newbet-side
+cd /home/farmsnva/almaxpredictions.com/newbet-side
 git pull origin main
-export LARAVEL_PUBLIC_DIR=/home/almaxpredictions.com/almaxapi/public
+export LARAVEL_PUBLIC_DIR=/home/farmsnva/almaxpredictions.com/almaxapi/public
 npm run deploy:cpanel
 ```
 
