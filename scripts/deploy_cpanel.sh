@@ -40,12 +40,22 @@ if ! grep -q '^APP_KEY=base64:' .env; then
   php artisan key:generate --force
 fi
 
+echo "[init] Preparing writable Laravel runtime directories..."
+mkdir -p \
+  bootstrap/cache \
+  storage/framework/cache/data \
+  storage/framework/sessions \
+  storage/framework/testing \
+  storage/framework/views \
+  storage/logs
+chmod -R u+rwX bootstrap/cache storage
+
 echo "[1/6] Installing PHP dependencies..."
 composer_log="$(mktemp "${TMPDIR:-/tmp}/almaxapi-composer.XXXXXX")"
 if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction \
   2>&1 | tee "$composer_log"; then
   composer_failure="unclassified Composer error"
-  if grep -Eqi 'permission denied|could not delete|cannot create cache' "$composer_log"; then
+  if grep -Eqi 'permission denied|could not delete|cannot create cache|must be present and writable' "$composer_log"; then
     composer_failure="filesystem permissions"
   elif grep -Eqi 'lock file.*not compatible|platform requirements|requires php|missing.*extension' "$composer_log"; then
     composer_failure="PHP or extension platform requirements"
