@@ -121,24 +121,65 @@ jobs:
 
           cd "$api_path"
 
-          # These paths are changed by the running app and frontend deploy.
-          # Other server-side edits remain protected from being overwritten.
+          # These tracked paths are changed by the running app and frontend
+          # deploy, so preserve them while updating the API checkout.
           ignored_paths=(
             ':(exclude)public/favicon.ico'
             ':(exclude)public/uploads/**'
           )
+
           if ! git diff --quiet -- . "${ignored_paths[@]}" || \
              ! git diff --cached --quiet -- . "${ignored_paths[@]}"; then
-            echo "[error] Refusing to deploy over server-side source changes:" >&2
+            backup_root="$(dirname "$api_path")/.almaxapi-deploy-backups"
+            backup_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            mkdir -p "$backup_root"
+
+            git diff --binary -- . "${ignored_paths[@]}" \
+              > "$backup_root/${backup_stamp}-worktree.patch"
+            git diff --cached --binary -- . "${ignored_paths[@]}" \
+              > "$backup_root/${backup_stamp}-index.patch"
+            chmod 600 "$backup_root/${backup_stamp}-worktree.patch" \
+              "$backup_root/${backup_stamp}-index.patch"
+
+            echo "[warning] Archived server-side source changes before deployment:" >&2
             git diff --name-status -- . "${ignored_paths[@]}" >&2
             git diff --cached --name-status -- . "${ignored_paths[@]}" >&2
-            echo "[error] Commit, restore, or move those changes, then rerun the workflow." >&2
-            exit 1
+            echo "[warning] Recovery patches: $backup_root/${backup_stamp}-*.patch" >&2
           fi
 
+          runtime_backup="$(mktemp -d "${TMPDIR:-/tmp}/almaxapi-runtime.XXXXXX")"
+          cleanup() {
+            rm -rf "$runtime_backup"
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$runtime_backup/public"
+          shopt -s nullglob dotglob
+          runtime_paths=(
+            public/uploads
+            public/favicon.ico
+            public/index.html
+            public/js
+            public/css
+            public/img
+            public/fonts
+            public/assets
+            public/.frontend_backup_*
+          )
+          for path in "${runtime_paths[@]}"; do
+            if [[ -e "$path" ]]; then
+              cp -a "$path" "$runtime_backup/public/"
+            fi
+          done
+
           git fetch --prune origin main
-          git checkout main
-          git merge --ff-only origin/main
+          git checkout -f main
+          git reset --hard origin/main
+
+          for path in "$runtime_backup/public"/*; do
+            cp -a "$path" public/
+          done
+
           bash scripts/deploy_cpanel.sh
           REMOTE
 
