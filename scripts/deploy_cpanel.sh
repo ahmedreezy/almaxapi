@@ -41,7 +41,29 @@ if ! grep -q '^APP_KEY=base64:' .env; then
 fi
 
 echo "[1/6] Installing PHP dependencies..."
-"$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction
+composer_log="$(mktemp "${TMPDIR:-/tmp}/almaxapi-composer.XXXXXX")"
+if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction \
+  2>&1 | tee "$composer_log"; then
+  composer_failure="unclassified Composer error"
+  if grep -Eqi 'permission denied|could not delete|cannot create cache' "$composer_log"; then
+    composer_failure="filesystem permissions"
+  elif grep -Eqi 'lock file.*not compatible|platform requirements|requires php|missing.*extension' "$composer_log"; then
+    composer_failure="PHP or extension platform requirements"
+  elif grep -Eqi 'composer\.lock.*not up to date|lock file.*not up to date' "$composer_log"; then
+    composer_failure="composer.json and composer.lock mismatch"
+  elif grep -Eqi 'allowed memory size|out of memory' "$composer_log"; then
+    composer_failure="PHP memory limit"
+  elif grep -Eqi 'could not resolve|connection timed out|SSL operation failed|curl error' "$composer_log"; then
+    composer_failure="network connectivity"
+  elif grep -Eqi 'script .* returned with error code|artisan package:discover' "$composer_log"; then
+    composer_failure="Laravel Composer script"
+  fi
+  printf '::error title=Composer install failed::Failure category: %s. Review the authenticated workflow log for details.\n' \
+    "$composer_failure"
+  rm -f "$composer_log"
+  exit 1
+fi
+rm -f "$composer_log"
 
 echo "[2/6] Running migrations..."
 php artisan migrate --force
