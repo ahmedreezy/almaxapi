@@ -57,8 +57,10 @@ if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction \
   composer_failure="unclassified Composer error"
   if grep -Eqi 'permission denied|could not delete|cannot create cache|must be present and writable|file_put_contents.*failed|failed to open stream' "$composer_log"; then
     composer_failure="filesystem permissions"
-  elif grep -Eqi 'failed to parse.*env|dotenv|unexpected whitespace|reserved character|unsupported cipher|incorrect key length|no application encryption key' "$composer_log"; then
-    composer_failure="production environment configuration"
+  elif grep -Eqi 'failed to parse.*env|dotenv|unexpected whitespace|reserved character' "$composer_log"; then
+    composer_failure="malformed production .env syntax"
+  elif grep -Eqi 'unsupported cipher|incorrect key length|no application encryption key' "$composer_log"; then
+    composer_failure="invalid or missing APP_KEY"
   elif grep -Eqi 'SQLSTATE|could not find driver|connection refused|database.*does not exist' "$composer_log"; then
     composer_failure="database connection during application bootstrap"
   elif grep -Eqi 'class .* not found|target class .* does not exist|trait .* not found|call to undefined function' "$composer_log"; then
