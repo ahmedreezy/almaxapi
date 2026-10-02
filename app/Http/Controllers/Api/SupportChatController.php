@@ -103,11 +103,19 @@ class SupportChatController extends Controller
             return $message;
         });
 
-        ProcessSupportMessage::dispatch($message->id);
+        $processedImmediately = (bool) config('support.platform_sync', true);
+        if ($processedImmediately) {
+            $this->processImmediately($message->id);
+        } else {
+            ProcessSupportMessage::dispatch($message->id);
+        }
+
+        $conversation = $message->conversation->fresh();
 
         return response()->json([
-            'conversation' => $this->serializeConversation($message->conversation),
-        ], 202);
+            'conversation' => $this->serializeConversation($conversation),
+            'processing' => $processedImmediately ? 'complete' : 'queued',
+        ], $processedImmediately ? 200 : 202);
     }
 
     private function latestConversation(Request $request): ?SupportConversation
@@ -137,5 +145,30 @@ class SupportChatController extends Controller
                 'sentAt' => ($message->sent_at ?? $message->created_at)?->toISOString(),
             ])->values(),
         ];
+    }
+
+    private function processImmediately(int $messageId): void
+    {
+        $keys = [
+            'support.openai_budget_seconds',
+            'support.openai_max_rounds',
+            'services.openai.timeout',
+            'services.openai.max_attempts',
+        ];
+        $original = collect($keys)->mapWithKeys(fn ($key) => [$key => config($key)])->all();
+        $budget = (int) config('support.platform_sync_budget_seconds', 12);
+
+        config()->set([
+            'support.openai_budget_seconds' => $budget,
+            'support.openai_max_rounds' => min(2, (int) config('support.openai_max_rounds', 3)),
+            'services.openai.timeout' => min($budget, (int) config('services.openai.timeout', 20)),
+            'services.openai.max_attempts' => 1,
+        ]);
+
+        try {
+            dispatch_sync(new ProcessSupportMessage($messageId));
+        } finally {
+            config()->set($original);
+        }
     }
 }

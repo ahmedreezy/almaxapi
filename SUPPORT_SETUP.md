@@ -40,6 +40,9 @@ SUPPORT_TIMEZONE=Africa/Kampala
 SUPPORT_MAX_OUTPUT_TOKENS=350
 SUPPORT_HISTORY_MESSAGES=10
 SUPPORT_KNOWLEDGE_ARTICLES=8
+SUPPORT_KNOWLEDGE_FAST_PATH_CONFIDENCE=0.76
+SUPPORT_PLATFORM_SYNC=true
+SUPPORT_PLATFORM_SYNC_BUDGET_SECONDS=12
 SUPPORT_MESSAGE_RETENTION_DAYS=365
 SUPPORT_JOB_TIMEOUT_SECONDS=60
 SUPPORT_JOB_TRIES=1
@@ -75,8 +78,11 @@ If cPanel cannot supervise a permanent process, add this cron every minute:
 ```
 
 The cron form is a fallback only and can add almost 60 seconds before a reply
-starts. Interactive platform chat should use Supervisor, systemd, or the cPanel
-Process Manager to keep the worker running continuously.
+starts. WhatsApp and platform chat with `SUPPORT_PLATFORM_SYNC=false` should use
+Supervisor, systemd, or the cPanel Process Manager to keep the worker running
+continuously. With `SUPPORT_PLATFORM_SYNC=true`, website chat is processed in
+the request with a strict 12-second budget; published high-confidence knowledge
+answers and live package discovery normally complete without an OpenAI request.
 
 Keep the existing scheduler cron as well:
 

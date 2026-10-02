@@ -36,6 +36,7 @@ class SupportSystemTest extends TestCase
         config()->set('services.twilio.whatsapp_from', '+14155238886');
         config()->set('services.twilio.inbound_webhook_url', self::WEBHOOK_URL);
         config()->set('support.daily_reply_limit', 2);
+        config()->set('support.platform_sync', false);
     }
 
     public function test_signed_twilio_message_creates_linked_conversation_and_queues_processing(): void
@@ -538,6 +539,40 @@ class SupportSystemTest extends TestCase
             ->assertJsonPath('duplicate', true);
 
         $this->assertDatabaseCount('support_messages', 1);
+    }
+
+    public function test_platform_chat_returns_an_approved_knowledge_reply_immediately(): void
+    {
+        config()->set('support.platform_sync', true);
+        Http::fake();
+        SupportKnowledgeArticle::create([
+            'public_id' => (string) Str::uuid(),
+            'title' => 'Prediction responsibility',
+            'question' => 'Are Almax predictions guaranteed to win?',
+            'answer' => 'No. Football outcomes are uncertain and no prediction is guaranteed.',
+            'keywords' => ['prediction', 'guaranteed', 'win', 'risk'],
+            'locale' => 'en',
+            'status' => 'published',
+            'published_at' => now(),
+        ]);
+        $account = $this->createUser('0708888877');
+
+        $this->withHeaders($account['headers'])
+            ->postJson('/api/support/chat/messages', [
+                'body' => 'Are predictions guaranteed to win?',
+                'clientMessageId' => (string) Str::uuid(),
+            ])
+            ->assertOk()
+            ->assertJsonPath('processing', 'complete')
+            ->assertJsonPath('conversation.waitingForReply', false)
+            ->assertJsonPath('conversation.messages.1.sender', 'support')
+            ->assertJsonPath('conversation.messages.1.body', 'No. Football outcomes are uncertain and no prediction is guaranteed.');
+
+        $reply = SupportMessage::where('direction', 'outbound')->firstOrFail();
+        $this->assertSame('approved-knowledge', $reply->model);
+        $this->assertSame('knowledge_fast_path', $reply->metadata['performance']['source']);
+        $this->assertSame(0, $reply->input_tokens);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'api.openai.com'));
     }
 
     public function test_new_platform_message_replaces_an_unanswered_session(): void
