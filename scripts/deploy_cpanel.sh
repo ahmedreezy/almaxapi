@@ -109,7 +109,26 @@ php artisan view:cache
 echo "[verify] Checking health endpoint routing..."
 php artisan route:list | grep -E "api/health|config/vip-config" || true
 
+echo "[verify] Checking platform AI support configuration and live model access..."
+php artisan support:doctor --channel=platform --probe-openai
+
 php artisan queue:restart
+
+echo "[verify] Checking support queue worker supervision..."
+worker_running=false
+worker_scheduled=false
+if command -v pgrep >/dev/null 2>&1 && pgrep -af 'artisan queue:(work|listen).*support' >/dev/null; then
+  worker_running=true
+fi
+if command -v crontab >/dev/null 2>&1 && \
+   crontab -l 2>/dev/null | grep -Eq 'artisan queue:(work|listen).*(--queue[= ]support|support,default)'; then
+  worker_scheduled=true
+fi
+if [[ "$worker_running" != true && "$worker_scheduled" != true ]]; then
+  echo "[error] No running or cron-supervised worker was found for the support queue."
+  echo "Configure Supervisor/cPanel Process Manager, or add the support queue cron from SUPPORT_SETUP.md."
+  exit 1
+fi
 
 echo ""
 echo "Deploy complete."

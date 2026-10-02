@@ -14,9 +14,9 @@ $phpPath  = "php"                               # adjust if php.exe is not on PA
 Write-Host "[queue] Starting Almax queue worker in $apiDir" -ForegroundColor Cyan
 
 while ($true) {
-    Write-Host "[queue] Launching: php artisan queue:work --sleep=3 --tries=3 --max-time=3600" -ForegroundColor Yellow
+    Write-Host "[queue] Launching support worker" -ForegroundColor Yellow
     $proc = Start-Process -FilePath $phpPath `
-                          -ArgumentList "artisan", "queue:work", "--sleep=3", "--tries=3", "--max-time=3600" `
+                          -ArgumentList "artisan", "queue:work", "database", "--queue=support,default", "--sleep=3", "--tries=2", "--timeout=240", "--max-time=3600" `
                           -WorkingDirectory $apiDir `
                           -NoNewWindow -PassThru -Wait
     Write-Host "[queue] Worker exited with code $($proc.ExitCode). Restarting in 5 seconds..." -ForegroundColor Red

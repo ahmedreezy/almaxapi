@@ -52,13 +52,13 @@ php artisan route:cache
 Run a continuously supervised worker when the host supports it:
 
 ```bash
-php artisan queue:work database --queue=support,default --sleep=1 --tries=3 --timeout=90 --max-time=3600
+php artisan queue:work database --queue=support,default --sleep=1 --tries=2 --timeout=240 --max-time=3600
 ```
 
 If cPanel cannot supervise a permanent process, add this cron every minute:
 
 ```cron
-* * * * * cd /absolute/path/to/almaxapi && php artisan queue:work database --queue=support,default --stop-when-empty --tries=3 --timeout=90 >> /dev/null 2>&1
+* * * * * cd /absolute/path/to/almaxapi && php artisan queue:work database --queue=support,default --stop-when-empty --tries=2 --timeout=240 >> /dev/null 2>&1
 ```
 
 Keep the existing scheduler cron as well:
@@ -218,7 +218,7 @@ Then reload Laravel configuration:
 
 ```bash
 php artisan config:clear
-php artisan support:doctor
+php artisan support:doctor --channel=platform --probe-openai
 ```
 
 The configured URLs must exactly match the URLs Twilio calls. The application
@@ -246,7 +246,7 @@ both Twilio Sandbox URLs, and run `php artisan config:clear` again.
 Keep Laravel and ngrok running. In a third terminal, start the queue worker:
 
 ```bash
-php artisan queue:work database --queue=support,default --sleep=1 --tries=3 --timeout=90
+php artisan queue:work database --queue=support,default --sleep=1 --tries=2 --timeout=240
 ```
 
 Send `Hello` from the joined WhatsApp phone to the Sandbox sender. A successful
@@ -275,8 +275,9 @@ the queue terminal and Laravel log first; the most common causes are a stopped
 worker, missing OpenAI billing/key, an expired Sandbox join, or a phone that did
 not join this Sandbox.
 
-The `support:doctor` command never prints secret values and never contacts
-Twilio or OpenAI. All checks must show `PASS` before the live end-to-end test.
+The `support:doctor` command never prints secret values. It contacts OpenAI only
+when `--probe-openai` is supplied and never sends a Twilio message. All checks
+must show `PASS` before the live end-to-end test.
 
 ## 4. Register the production WhatsApp sender
 

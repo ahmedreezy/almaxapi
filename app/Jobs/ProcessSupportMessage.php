@@ -16,12 +16,16 @@ class ProcessSupportMessage implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 3;
+    public int $tries;
 
-    public int $timeout = 90;
+    public int $timeout;
+
+    public bool $failOnTimeout = true;
 
     public function __construct(public readonly int $messageId)
     {
+        $this->tries = max(1, (int) config('support.job_tries', 2));
+        $this->timeout = max(30, (int) config('support.job_timeout', 240));
         $this->onQueue('support');
     }
 
@@ -64,9 +68,10 @@ class ProcessSupportMessage implements ShouldQueue
         }
 
         if (! $quota->reserve($contact)) {
-            if ($quota->claimLimitNotice($contact)) {
-                $this->sendOperationalMessage($conversation, $twilio, (string) config('support.limit_message'));
-            }
+            // Every inbound message needs an outbound terminal record. Sending
+            // this notice only once leaves later messages permanently pending.
+            $quota->claimLimitNotice($contact);
+            $this->sendOperationalMessage($conversation, $twilio, (string) config('support.limit_message'));
 
             return;
         }
@@ -143,6 +148,58 @@ class ProcessSupportMessage implements ShouldQueue
                 Log::error('Support fallback send failed', ['error' => $sendError->getMessage()]);
                 throw $e;
             }
+        }
+    }
+
+    public function failed(?Throwable $exception): void
+    {
+        $incoming = SupportMessage::with('conversation.contact')->find($this->messageId);
+        if (! $incoming || $incoming->direction !== 'inbound') {
+            return;
+        }
+
+        $conversation = $incoming->conversation;
+        if (! $conversation || ! $conversation->contact) {
+            return;
+        }
+
+        if ($conversation->messages()
+            ->where('direction', 'outbound')
+            ->where('metadata->in_reply_to', $incoming->id)
+            ->exists()) {
+            return;
+        }
+
+        $conversation->update([
+            'mode' => 'ai',
+            'status' => 'open',
+            'priority' => 'high',
+            'assigned_admin_id' => null,
+            'human_requested_at' => null,
+            'resolved_at' => null,
+        ]);
+
+        try {
+            app(SupportQuotaService::class)->release($conversation->contact);
+        } catch (Throwable $releaseError) {
+            Log::warning('Support failed-job quota release skipped', [
+                'message_id' => $incoming->id,
+                'error' => $releaseError->getMessage(),
+            ]);
+        }
+
+        try {
+            $this->sendOperationalMessage(
+                $conversation,
+                app(TwilioWhatsAppService::class),
+                (string) config('support.fallback_message')
+            );
+        } catch (Throwable $sendError) {
+            Log::error('Support failed-job fallback send failed', [
+                'message_id' => $incoming->id,
+                'original_error' => $exception?->getMessage(),
+                'send_error' => $sendError->getMessage(),
+            ]);
         }
     }
 

@@ -5,7 +5,7 @@ title Almax Queue Worker
 :loop
 cd /d "%~dp0.."
 echo [%TIME%] Starting php artisan queue:work ...
-php artisan queue:work --sleep=3 --tries=3 --max-time=3600
+php artisan queue:work database --queue=support,default --sleep=3 --tries=2 --timeout=240 --max-time=3600
 echo [%TIME%] Worker stopped. Restarting in 5 seconds...
 timeout /t 5 /nobreak >nul
 goto loop

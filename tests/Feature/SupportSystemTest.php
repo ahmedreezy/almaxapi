@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\TestCase;
 
 class SupportSystemTest extends TestCase
@@ -624,6 +625,112 @@ class SupportSystemTest extends TestCase
             config('support.greeting')."\n\n".config('support.fallback_message'),
             SupportMessage::where('direction', 'outbound')->firstOrFail()->body,
         );
+    }
+
+    public function test_every_message_over_the_daily_limit_receives_a_terminal_reply(): void
+    {
+        config()->set('support.daily_reply_limit', 1);
+        $account = $this->createUser('0707777788');
+        $contact = SupportContact::create([
+            'user_id' => $account['user']->id,
+            'channel' => 'platform',
+            'external_id' => 'user:'.$account['user']->id,
+            'phone' => $account['user']->phone,
+        ]);
+        $conversation = SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+        ]);
+        $quota = app(SupportQuotaService::class);
+        $this->assertTrue($quota->reserve($contact));
+        $quota->consume($contact, 10, 5);
+
+        foreach (['limit-one', 'limit-two'] as $providerId) {
+            $incoming = SupportMessage::create([
+                'conversation_id' => $conversation->id,
+                'direction' => 'inbound',
+                'sender_type' => 'customer',
+                'body' => 'Please reply.',
+                'provider_message_id' => 'platform:'.$providerId,
+            ]);
+
+            dispatch_sync(new ProcessSupportMessage($incoming->id));
+
+            $this->assertDatabaseHas('support_messages', [
+                'conversation_id' => $conversation->id,
+                'direction' => 'outbound',
+            ]);
+            $this->assertTrue($conversation->messages()
+                ->where('direction', 'outbound')
+                ->where('metadata->in_reply_to', $incoming->id)
+                ->exists());
+        }
+
+        $this->assertSame(2, $conversation->messages()->where('direction', 'outbound')->count());
+    }
+
+    public function test_failed_platform_job_releases_quota_and_persists_fallback_once(): void
+    {
+        $account = $this->createUser('0707777799');
+        $contact = SupportContact::create([
+            'user_id' => $account['user']->id,
+            'channel' => 'platform',
+            'external_id' => 'user:'.$account['user']->id,
+            'phone' => $account['user']->phone,
+        ]);
+        $conversation = SupportConversation::create([
+            'public_id' => (string) Str::uuid(),
+            'contact_id' => $contact->id,
+        ]);
+        $incoming = SupportMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'sender_type' => 'customer',
+            'body' => 'This job timed out.',
+            'provider_message_id' => 'platform:timed-out-job',
+        ]);
+        $this->assertTrue(app(SupportQuotaService::class)->reserve($contact));
+
+        $job = new ProcessSupportMessage($incoming->id);
+        $this->assertSame(240, $job->timeout);
+        $this->assertSame(2, $job->tries);
+        $this->assertTrue($job->failOnTimeout);
+
+        $job->failed(new RuntimeException('Job timed out.'));
+        $job->failed(new RuntimeException('Duplicate failure callback.'));
+
+        $usage = SupportDailyUsage::firstOrFail();
+        $this->assertSame(0, $usage->replies_reserved);
+        $this->assertSame(1, $conversation->messages()->where('direction', 'outbound')->count());
+        $reply = $conversation->messages()->where('direction', 'outbound')->firstOrFail();
+        $this->assertSame($incoming->id, $reply->metadata['in_reply_to']);
+        $this->assertStringContainsString((string) config('support.fallback_message'), $reply->body);
+        $this->assertSame('high', $conversation->fresh()->priority);
+    }
+
+    public function test_platform_support_doctor_can_probe_openai_without_twilio_configuration(): void
+    {
+        config()->set('queue.default', 'database');
+        config()->set('services.openai.api_key', 'openai-test-key');
+        config()->set('services.openai.model', 'gpt-5.4-mini');
+        config()->set('services.openai.base_url', 'https://api.openai.test/v1');
+        config()->set('services.twilio.account_sid', '');
+        config()->set('services.twilio.auth_token', '');
+        Http::fake([
+            'api.openai.test/*' => Http::response([
+                'id' => 'resp_support_probe',
+                'status' => 'completed',
+            ]),
+        ]);
+
+        $this->artisan('support:doctor', [
+            '--channel' => 'platform',
+            '--probe-openai' => true,
+        ])->assertExitCode(0);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://api.openai.test/v1/responses'
+            && $request['model'] === 'gpt-5.4-mini'
+            && $request['store'] === false);
     }
 
     private function signature(string $url, array $params): string

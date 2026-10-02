@@ -57,7 +57,7 @@ Route::get('/support/receipts/{payment}', [SupportReceiptController::class, 'sho
     ->name('support.receipt')
     ->middleware('signed');
 
-Route::prefix('support/chat')->middleware(['auth.user', 'throttle:30,1'])->group(function () {
+Route::prefix('support/chat')->middleware(['auth.user', 'throttle:60,1'])->group(function () {
     Route::get('/', [SupportChatController::class, 'show']);
     Route::post('/messages', [SupportChatController::class, 'store']);
 });
