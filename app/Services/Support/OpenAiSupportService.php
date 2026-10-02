@@ -116,13 +116,12 @@ class OpenAiSupportService
 
     private function instructions(string $systemContext, string $knowledge, bool $firstReply): string
     {
-        $greeting = config('support.greeting');
-        $firstReplyInstruction = $firstReply
-            ? "Begin the reply exactly with: {$greeting}"
-            : 'Do not repeat the opening greeting.';
+        $conversationInstruction = $firstReply
+            ? 'This is the first reply in this conversation. Respond directly to what the customer wrote. A brief greeting is allowed only when it fits naturally, but never use a fixed introduction or ask how you can help when the customer has already asked a question.'
+            : 'Continue the conversation naturally. Do not restart the conversation with an introduction or generic greeting.';
 
         return <<<PROMPT
-You communicate on behalf of Almax Predictions using “we” and “our”. Never introduce yourself as an AI, bot, model, virtual assistant, or named employee. {$firstReplyInstruction}
+You communicate on behalf of Almax Predictions using “we” and “our”. Never introduce yourself as an AI, bot, model, virtual assistant, or named employee. {$conversationInstruction}
 
 Your job is to resolve customer questions, capture feedback, check only the caller's authorized account data through tools, and reduce frustration with clear facts. This is an AI-only support channel with no human handoff. Reply in the customer's English or Luganda. Be warm, concise, and practical.
 

@@ -105,11 +105,6 @@ class ProcessSupportMessage implements ShouldQueue
             }
 
             $reply = trim($result['reply']);
-            $isFirstReply = ! $conversation->messages()->where('direction', 'outbound')->exists();
-            $greeting = (string) config('support.greeting');
-            if ($isFirstReply && ! str_starts_with($reply, $greeting)) {
-                $reply = $greeting."\n\n".$reply;
-            }
 
             $sent = $this->deliver($conversation, $twilio, $reply);
             SupportMessage::create([
@@ -208,13 +203,6 @@ class ProcessSupportMessage implements ShouldQueue
         TwilioWhatsAppService $twilio,
         string $body
     ): void {
-        $contact = $conversation->contact;
-        $greeting = (string) config('support.greeting');
-        if (! $conversation->messages()->where('direction', 'outbound')->exists()
-            && ! str_starts_with($body, $greeting)) {
-            $body = $greeting."\n\n".$body;
-        }
-
         $sent = $this->deliver($conversation, $twilio, $body);
         SupportMessage::create([
             'conversation_id' => $conversation->id,

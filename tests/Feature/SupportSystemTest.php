@@ -205,7 +205,7 @@ class SupportSystemTest extends TestCase
         $this->get("/api/support/receipts/{$payment->id}")->assertForbidden();
     }
 
-    public function test_first_operational_reply_uses_the_almax_greeting(): void
+    public function test_first_operational_reply_sends_only_the_relevant_instruction(): void
     {
         Http::fake([
             'api.twilio.com/*' => Http::response(['sid' => 'SM-MEDIA-REPLY', 'status' => 'queued'], 201),
@@ -231,7 +231,7 @@ class SupportSystemTest extends TestCase
         dispatch_sync(new ProcessSupportMessage($incoming->id));
 
         $reply = SupportMessage::where('direction', 'outbound')->firstOrFail();
-        $this->assertStringStartsWith((string) config('support.greeting'), $reply->body);
+        $this->assertSame(config('support.text_only_message'), $reply->body);
         $this->assertSame('system', $reply->sender_type);
         $this->assertDatabaseCount('support_daily_usages', 0);
     }
@@ -280,6 +280,8 @@ class SupportSystemTest extends TestCase
         Http::fake(function ($request) use (&$openAiCalls) {
             if (str_contains($request->url(), 'api.openai.test')) {
                 $this->assertStringContainsString('Almax Predictions is a football prediction-content service', $request['instructions']);
+                $this->assertStringContainsString('Respond directly to what the customer wrote', $request['instructions']);
+                $this->assertStringNotContainsString('Begin the reply exactly with', $request['instructions']);
                 $this->assertTrue(collect($request['tools'])->contains(
                     fn (array $tool) => ($tool['name'] ?? '') === 'get_available_packages'
                 ));
@@ -325,7 +327,7 @@ class SupportSystemTest extends TestCase
         dispatch_sync(new ProcessSupportMessage($incoming->id));
 
         $outbound = SupportMessage::where('direction', 'outbound')->firstOrFail();
-        $this->assertStringStartsWith('Hello, this is Almax Predictions.', $outbound->body);
+        $this->assertSame('We received your UGX 10,000 payment and your subscription is active.', $outbound->body);
         $this->assertSame('ai', $outbound->sender_type);
         $this->assertSame(1, SupportDailyUsage::firstOrFail()->replies_used);
         $this->assertSame(220, SupportDailyUsage::first()->input_tokens);
@@ -622,7 +624,7 @@ class SupportSystemTest extends TestCase
         $this->assertSame('open', $conversation->status);
         $this->assertNull($conversation->human_requested_at);
         $this->assertSame(
-            config('support.greeting')."\n\n".config('support.fallback_message'),
+            config('support.fallback_message'),
             SupportMessage::where('direction', 'outbound')->firstOrFail()->body,
         );
     }

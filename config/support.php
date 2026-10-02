@@ -10,7 +10,6 @@ return [
     'retention_days' => (int) env('SUPPORT_MESSAGE_RETENTION_DAYS', 365),
     'job_timeout' => (int) env('SUPPORT_JOB_TIMEOUT_SECONDS', 240),
     'job_tries' => (int) env('SUPPORT_JOB_TRIES', 2),
-    'greeting' => 'Hello, this is Almax Predictions. How can we help you today?',
     'limit_message' => 'You have reached today\'s automated reply limit. Please try again tomorrow when your AI support allowance resets.',
     'fallback_message' => 'We could not complete that automated check right now. Please send your message again in a moment so we can retry.',
     'text_only_message' => 'Please send your feedback or question as a text message so we can assist you.',
