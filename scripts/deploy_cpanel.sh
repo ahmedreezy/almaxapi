@@ -55,8 +55,16 @@ composer_log="$(mktemp "${TMPDIR:-/tmp}/almaxapi-composer.XXXXXX")"
 if ! "$COMPOSER_BIN" install --no-dev --optimize-autoloader --no-interaction \
   2>&1 | tee "$composer_log"; then
   composer_failure="unclassified Composer error"
-  if grep -Eqi 'permission denied|could not delete|cannot create cache|must be present and writable' "$composer_log"; then
+  if grep -Eqi 'permission denied|could not delete|cannot create cache|must be present and writable|file_put_contents.*failed|failed to open stream' "$composer_log"; then
     composer_failure="filesystem permissions"
+  elif grep -Eqi 'failed to parse.*env|dotenv|unexpected whitespace|reserved character|unsupported cipher|incorrect key length|no application encryption key' "$composer_log"; then
+    composer_failure="production environment configuration"
+  elif grep -Eqi 'SQLSTATE|could not find driver|connection refused|database.*does not exist' "$composer_log"; then
+    composer_failure="database connection during application bootstrap"
+  elif grep -Eqi 'class .* not found|target class .* does not exist|trait .* not found|call to undefined function' "$composer_log"; then
+    composer_failure="missing PHP class, package, or extension"
+  elif grep -Eqi 'parseerror|syntax error|typeerror|undefined (variable|property|array key)' "$composer_log"; then
+    composer_failure="PHP application error during bootstrap"
   elif grep -Eqi 'lock file.*not compatible|platform requirements|requires php|missing.*extension' "$composer_log"; then
     composer_failure="PHP or extension platform requirements"
   elif grep -Eqi 'composer\.lock.*not up to date|lock file.*not up to date' "$composer_log"; then
