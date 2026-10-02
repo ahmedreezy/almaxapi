@@ -71,10 +71,11 @@ class SupportChatController extends Controller
 
             $latest = $conversation->messages()->latest('id')->first();
             if ($latest?->direction === 'inbound') {
-                return response()->json([
-                    'message' => 'Please wait while we answer your previous message.',
-                    'conversation' => $this->serializeConversation($conversation),
-                ], 409);
+                $conversation->update([
+                    'status' => 'resolved',
+                    'resolved_at' => now(),
+                ]);
+                $conversation = null;
             }
         }
 

@@ -490,6 +490,43 @@ class SupportSystemTest extends TestCase
         $this->assertDatabaseCount('support_messages', 1);
     }
 
+    public function test_new_platform_message_replaces_an_unanswered_session(): void
+    {
+        Queue::fake();
+        $account = $this->createUser('0708888899');
+        $firstPayload = [
+            'body' => 'My first request has not received a reply.',
+            'clientMessageId' => (string) Str::uuid(),
+        ];
+        $secondPayload = [
+            'body' => 'Please start over with this request.',
+            'clientMessageId' => (string) Str::uuid(),
+        ];
+
+        $firstResponse = $this->withHeaders($account['headers'])
+            ->postJson('/api/support/chat/messages', $firstPayload)
+            ->assertAccepted();
+
+        $firstConversationId = $firstResponse->json('conversation.id');
+
+        $secondResponse = $this->withHeaders($account['headers'])
+            ->postJson('/api/support/chat/messages', $secondPayload)
+            ->assertAccepted()
+            ->assertJsonPath('conversation.messages.0.body', $secondPayload['body'])
+            ->assertJsonCount(1, 'conversation.messages')
+            ->assertJsonPath('conversation.waitingForReply', true);
+
+        $this->assertNotSame($firstConversationId, $secondResponse->json('conversation.id'));
+
+        $conversations = SupportConversation::orderBy('id')->get();
+        $this->assertCount(2, $conversations);
+        $this->assertSame('resolved', $conversations[0]->status);
+        $this->assertNotNull($conversations[0]->resolved_at);
+        $this->assertSame('open', $conversations[1]->status);
+        $this->assertDatabaseCount('support_messages', 2);
+        Queue::assertPushed(ProcessSupportMessage::class, 2);
+    }
+
     public function test_platform_chat_reply_is_persisted_without_twilio_delivery(): void
     {
         config()->set('services.openai.api_key', 'openai-test-key');
