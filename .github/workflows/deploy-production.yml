@@ -84,28 +84,58 @@ jobs:
           : "${DEPLOY_KNOWN_HOSTS:?Missing DEPLOY_KNOWN_HOSTS production secret}"
           : "${API_DEPLOY_PATH:?Missing API_DEPLOY_PATH production variable}"
 
+          port="${DEPLOY_PORT:-22}"
+          if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+            echo "::error::DEPLOY_PORT must be a number from 1 to 65535 (received: '$port')."
+            exit 1
+          fi
+
       - name: Configure SSH
         shell: bash
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null; then
+            echo "::error::DEPLOY_SSH_KEY is not a valid unencrypted private SSH key. Store the complete private key, including its BEGIN and END lines."
+            exit 1
+          fi
 
       - name: Deploy API
         shell: bash
         run: |
           port="${DEPLOY_PORT:-22}"
-          ssh -i ~/.ssh/id_ed25519 -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" \
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -i ~/.ssh/id_ed25519 -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" \
             bash -s -- "$API_DEPLOY_PATH" <<'REMOTE'
           set -euo pipefail
           api_path="$1"
 
-          test -d "$api_path/.git"
+          if [[ ! -d "$api_path/.git" ]]; then
+            echo "[error] API_DEPLOY_PATH is not a Git checkout: $api_path" >&2
+            exit 1
+          fi
+
           cd "$api_path"
-          # The frontend pipeline owns this shared public asset.
-          git diff --quiet -- . ':(exclude)public/favicon.ico'
-          git diff --cached --quiet
+
+          # These paths are changed by the running app and frontend deploy.
+          # Other server-side edits remain protected from being overwritten.
+          ignored_paths=(
+            ':(exclude)public/favicon.ico'
+            ':(exclude)public/uploads/**'
+          )
+          if ! git diff --quiet -- . "${ignored_paths[@]}" || \
+             ! git diff --cached --quiet -- . "${ignored_paths[@]}"; then
+            echo "[error] Refusing to deploy over server-side source changes:" >&2
+            git diff --name-status -- . "${ignored_paths[@]}" >&2
+            git diff --cached --name-status -- . "${ignored_paths[@]}" >&2
+            echo "[error] Commit, restore, or move those changes, then rerun the workflow." >&2
+            exit 1
+          fi
+
           git fetch --prune origin main
           git checkout main
           git merge --ff-only origin/main
