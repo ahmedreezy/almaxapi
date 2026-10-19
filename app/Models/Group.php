@@ -17,15 +17,20 @@ class Group extends Model
     ];
 
     protected $casts = [
-        'price'         => 'float',
+        'price' => 'float',
         'special_price' => 'float',
-        'is_special'    => 'boolean',
-        'is_active'     => 'boolean',
+        'is_special' => 'boolean',
+        'is_active' => 'boolean',
     ];
 
     public function subscriptions(): HasMany
     {
         return $this->hasMany(Subscription::class);
+    }
+
+    public function releases(): HasMany
+    {
+        return $this->hasMany(PackageRelease::class);
     }
 
     /**
@@ -36,9 +41,9 @@ class Group extends Model
     {
         return match ($this->plan_type) {
             'monthly' => 30 * 24 * 3600,
-            'weekly'  => 7 * 24 * 3600,
+            'weekly' => 7 * 24 * 3600,
             'special' => 7 * 24 * 3600,
-            default   => 24 * 3600,
+            default => 24 * 3600,
         };
     }
 

@@ -21,6 +21,9 @@ class SupportFastReplyService
     public function respond(SupportConversation $conversation, SupportMessage $incoming): ?array
     {
         $message = mb_strtolower(trim($incoming->body));
+        if ($this->isGreetingOnly($message)) {
+            return $this->greetingReply($message);
+        }
         if ($this->isPackageDiscoveryRequest($message)) {
             return $this->packageReply($conversation, $incoming);
         }
@@ -52,6 +55,36 @@ class SupportFastReplyService
                 'openai_ms' => 0,
             ],
         ];
+    }
+
+    private function greetingReply(string $message): array
+    {
+        $luganda = (bool) preg_match('/\b(gyebale|oli otya|wasuze otya|osibye otya)\b/u', $message);
+        $reply = $luganda
+            ? 'Gyebale ko! Tukuyambe tutya leero?'
+            : (str_contains($message, 'morning') ? 'Good morning! How can we help you today?'
+                : (str_contains($message, 'evening') ? 'Good evening! How can we help you today?'
+                    : 'Hello! How can we help you today?'));
+
+        return [
+            'reply' => $reply,
+            'language' => $luganda ? 'lg' : 'en',
+            'category' => 'other',
+            'sentiment' => 'positive',
+            'priority' => 'low',
+            'action' => 'answer',
+            'summary' => 'Customer exchanged a greeting.',
+            'resolved' => false,
+            'input_tokens' => 0,
+            'output_tokens' => 0,
+            'model' => 'deterministic-greeting',
+            'performance' => ['source' => 'greeting_fast_path', 'openai_rounds' => 0, 'openai_ms' => 0],
+        ];
+    }
+
+    private function isGreetingOnly(string $message): bool
+    {
+        return (bool) preg_match('/^(hi|hello|hey|good\s+(morning|afternoon|evening)|gyebale(?:\s+ko)?|oli\s+otya|wasuze\s+otya|osibye\s+otya)[.!?\s]*$/u', $message);
     }
 
     /** @return array<string, mixed>|null */

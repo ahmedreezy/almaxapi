@@ -7,10 +7,13 @@ use App\Jobs\ProcessSupportMessage;
 use App\Models\SupportContact;
 use App\Models\SupportConversation;
 use App\Models\SupportMessage;
+use App\Models\SupportMessageAttachment;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SupportChatController extends Controller
 {
@@ -26,13 +29,19 @@ class SupportChatController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'body' => ['required', 'string', 'max:2000'],
+            'body' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'clientMessageId' => ['required', 'uuid'],
+            'attachments' => ['sometimes', 'array', 'max:3'],
+            'attachments.*' => ['file', 'max:'.max((int) config('support.max_image_kilobytes'), (int) config('support.max_audio_kilobytes'))],
+            'audioDuration' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:120'],
         ]);
-        $body = trim($data['body']);
-        if ($body === '') {
-            return response()->json(['message' => 'Please enter a message.'], 422);
+        $body = trim((string) ($data['body'] ?? ''));
+        $files = $request->file('attachments', []);
+        if ($body === '' && count($files) === 0) {
+            return response()->json(['message' => 'Please enter a message or attach an image or voice note.'], 422);
         }
+
+        $attachmentSpecs = $this->validateAttachments($files, $data['audioDuration'] ?? null);
 
         $user = $request->user();
         $providerId = "platform:{$user->id}:{$data['clientMessageId']}";
@@ -59,16 +68,7 @@ class SupportChatController extends Controller
             ->latest('id')
             ->first();
 
-        if ($conversation) {
-            if ($conversation->mode !== 'ai' || in_array($conversation->status, ['waiting_human', 'human'], true)) {
-                $conversation->update([
-                    'mode' => 'ai',
-                    'status' => 'open',
-                    'assigned_admin_id' => null,
-                    'human_requested_at' => null,
-                ]);
-            }
-
+        if ($conversation && $conversation->mode === 'ai') {
             $latest = $conversation->messages()->latest('id')->first();
             if ($latest?->direction === 'inbound') {
                 $conversation->update([
@@ -79,7 +79,7 @@ class SupportChatController extends Controller
             }
         }
 
-        $message = DB::transaction(function () use ($contact, $conversation, $body, $providerId) {
+        $message = DB::transaction(function () use ($contact, $conversation, $body, $providerId, $files, $attachmentSpecs, $data) {
             $conversation ??= SupportConversation::create([
                 'public_id' => (string) Str::uuid(),
                 'contact_id' => $contact->id,
@@ -95,16 +95,42 @@ class SupportChatController extends Controller
                 'body' => $body,
                 'provider_message_id' => $providerId,
                 'delivery_status' => 'received',
-                'metadata' => ['channel' => 'platform'],
+                'metadata' => ['channel' => 'platform', 'num_media' => count($files)],
                 'sent_at' => now(),
             ]);
+
+            foreach ($files as $index => $file) {
+                $spec = $attachmentSpecs[$index];
+                $extension = $file->guessExtension() ?: ($spec['kind'] === 'image' ? 'jpg' : 'webm');
+                $name = Str::uuid().'.'.$extension;
+                $path = $file->storeAs('support/'.now()->format('Y/m'), $name, 'local');
+                if (! $path) {
+                    throw new \RuntimeException('Could not store support attachment.');
+                }
+                SupportMessageAttachment::create([
+                    'public_id' => (string) Str::uuid(),
+                    'support_message_id' => $message->id,
+                    'kind' => $spec['kind'],
+                    'disk' => 'local',
+                    'path' => $path,
+                    'original_name' => mb_substr((string) $file->getClientOriginalName(), 0, 255),
+                    'mime_type' => $spec['mime'],
+                    'size_bytes' => $file->getSize(),
+                    'duration_seconds' => $spec['kind'] === 'audio' ? ($data['audioDuration'] ?? null) : null,
+                    'status' => $spec['kind'] === 'image' ? 'ready' : 'uploaded',
+                ]);
+            }
             $conversation->update(['last_message_at' => now()]);
 
             return $message;
         });
 
-        $processedImmediately = (bool) config('support.platform_sync', true);
-        if ($processedImmediately) {
+        $message->load('conversation', 'attachments');
+        $humanOwned = $message->conversation->mode === 'human';
+        $processedImmediately = ! $humanOwned && $message->attachments->isEmpty() && (bool) config('support.platform_sync', true);
+        if ($humanOwned) {
+            // The assigned admin will respond; never start an AI job during takeover.
+        } elseif ($processedImmediately) {
             $this->processImmediately($message->id);
         } else {
             ProcessSupportMessage::dispatch($message->id);
@@ -114,8 +140,20 @@ class SupportChatController extends Controller
 
         return response()->json([
             'conversation' => $this->serializeConversation($conversation),
-            'processing' => $processedImmediately ? 'complete' : 'queued',
+            'processing' => $humanOwned ? 'human' : ($processedImmediately ? 'complete' : 'queued'),
         ], $processedImmediately ? 200 : 202);
+    }
+
+    public function attachment(Request $request, SupportMessageAttachment $attachment): StreamedResponse
+    {
+        $attachment->loadMissing('message.conversation.contact');
+        abort_unless($attachment->message?->conversation?->contact?->user_id === $request->user()->id, 403);
+
+        return Storage::disk($attachment->disk)->response($attachment->path, $attachment->original_name, [
+            'Content-Type' => $attachment->mime_type,
+            'Cache-Control' => 'private, max-age=3600',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     private function latestConversation(Request $request): ?SupportConversation
@@ -129,7 +167,7 @@ class SupportChatController extends Controller
 
     private function serializeConversation(SupportConversation $conversation): array
     {
-        $messages = $conversation->messages()->latest('id')->limit(100)->get()->reverse()->values();
+        $messages = $conversation->messages()->with('attachments')->latest('id')->limit(100)->get()->reverse()->values();
 
         return [
             'id' => $conversation->public_id,
@@ -143,8 +181,51 @@ class SupportChatController extends Controller
                 'senderType' => $message->sender_type,
                 'body' => $message->body,
                 'sentAt' => ($message->sent_at ?? $message->created_at)?->toISOString(),
+                'attachments' => $message->attachments->map(fn (SupportMessageAttachment $attachment) => [
+                    'id' => $attachment->public_id,
+                    'kind' => $attachment->kind,
+                    'mimeType' => $attachment->mime_type,
+                    'size' => $attachment->size_bytes,
+                    'duration' => $attachment->duration_seconds,
+                    'status' => $attachment->status,
+                    'transcript' => $attachment->transcript,
+                    'url' => '/api/support/chat/attachments/'.$attachment->public_id,
+                ])->values(),
             ])->values(),
         ];
+    }
+
+    private function validateAttachments(array $files, ?int $duration): array
+    {
+        $imageMimes = ['image/jpeg', 'image/png', 'image/webp'];
+        $audioMimes = ['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/ogg', 'audio/webm', 'audio/wav', 'audio/x-wav', 'video/webm'];
+        $specs = [];
+        $audioCount = 0;
+        foreach ($files as $file) {
+            $mime = strtolower((string) $file->getMimeType());
+            if (in_array($mime, $imageMimes, true)) {
+                if ($file->getSize() > ((int) config('support.max_image_kilobytes') * 1024)) {
+                    abort(422, 'Each image must be 8 MB or smaller.');
+                }
+                $specs[] = ['kind' => 'image', 'mime' => $mime];
+            } elseif (in_array($mime, $audioMimes, true)) {
+                $audioCount++;
+                if ($file->getSize() > ((int) config('support.max_audio_kilobytes') * 1024)) {
+                    abort(422, 'Voice notes must be 10 MB or smaller.');
+                }
+                $specs[] = ['kind' => 'audio', 'mime' => $mime];
+            } else {
+                abort(422, 'Only PNG, JPEG, WEBP images and supported voice-note audio are allowed.');
+            }
+        }
+        if ($audioCount > 1 || ($audioCount === 1 && count($files) > 1)) {
+            abort(422, 'Send either one voice note or up to three images in a message.');
+        }
+        if ($audioCount === 1 && $duration !== null && $duration > 120) {
+            abort(422, 'Voice notes must be two minutes or shorter.');
+        }
+
+        return $specs;
     }
 
     private function processImmediately(int $messageId): void

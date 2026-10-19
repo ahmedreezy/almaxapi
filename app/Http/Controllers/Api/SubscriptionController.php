@@ -11,7 +11,7 @@ use App\Services\MobileMoneyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Manages the full subscription lifecycle.
@@ -23,7 +23,6 @@ use Illuminate\Support\Str;
  */
 class SubscriptionController extends Controller
 {
-
     /** Admin: list all subscriptions with auto-expiry updates */
     public function index(): JsonResponse
     {
@@ -73,6 +72,12 @@ class SubscriptionController extends Controller
         return response()->json($subs);
     }
 
+    /** Authenticated user: get only the subscriptions owned by this account. */
+    public function forMe(Request $request): JsonResponse
+    {
+        return $this->forUser($request->user()->id);
+    }
+
     /**
      * Public: create a subscription and initiate STK push.
      *
@@ -83,16 +88,16 @@ class SubscriptionController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'userId'        => ['required', 'integer', 'exists:users,id'],
-            'groupId'       => ['required', 'integer', 'exists:groups,id'],
+            'userId' => ['required', 'integer', 'exists:users,id'],
+            'groupId' => ['required', 'integer', 'exists:groups,id'],
             'paymentMethod' => ['required', 'string', 'in:mtn,airtel'],
-            'phone'         => ['required', 'string', 'max:30'],
+            'phone' => ['required', 'string', 'max:30'],
         ]);
 
         $user = User::findOrFail($data['userId']);
         if ($user->blacklisted) {
             return response()->json([
-                'error'   => 'Blacklisted',
+                'error' => 'Blacklisted',
                 'message' => 'This phone number has been blacklisted.',
             ], 403);
         }
@@ -151,21 +156,20 @@ class SubscriptionController extends Controller
         if ($group->isPastDeadline()) {
             $alternatives = Group::orderBy('price')
                 ->get()
-                ->filter(fn (Group $g) =>
-                    $g->isPubliclyVisible()
+                ->filter(fn (Group $g) => $g->isPubliclyVisible()
                     && ! $g->isPastDeadline()
                     && $g->id !== $group->id
                 )
                 ->map(fn (Group $g) => [
-                    'id'             => $g->id,
-                    'name'           => $g->name,
-                    'planType'       => $g->plan_type,
+                    'id' => $g->id,
+                    'name' => $g->name,
+                    'planType' => $g->plan_type,
                     'effectivePrice' => $g->effectivePrice(),
                 ])
                 ->values();
 
             return response()->json([
-                'message'      => 'Subscriptions for "' . $group->name . '" have closed for today.',
+                'message' => 'Subscriptions for "'.$group->name.'" have closed for today.',
                 'alternatives' => $alternatives,
             ], 422);
         }
@@ -175,37 +179,37 @@ class SubscriptionController extends Controller
 
         // Unique reference for this payment attempt. Jpesa may echo this value
         // back as the GET callback tid, so persist it before the STK request.
-        $reference = 'ALX-' . $group->id . '-' . $data['userId'] . '-' . time();
+        $reference = 'ALX-'.$group->id.'-'.$data['userId'].'-'.time();
 
         [$sub, $payment] = DB::transaction(function () use ($data, $group, $reference, $effectiveAmount) {
             $sub = Subscription::create([
-                'user_id'           => $data['userId'],
-                'group_id'          => $group->id,
-                'plan_type'         => $group->plan_type,
-                'odds_type'         => $group->odds_type,
-                'payment_method'    => $data['paymentMethod'],
-                'phone'             => $data['phone'],
-                'amount'            => $effectiveAmount,
-                'status'            => 'pending',
+                'user_id' => $data['userId'],
+                'group_id' => $group->id,
+                'plan_type' => $group->plan_type,
+                'odds_type' => $group->odds_type,
+                'payment_method' => $data['paymentMethod'],
+                'phone' => $data['phone'],
+                'amount' => $effectiveAmount,
+                'status' => 'pending',
                 'payment_reference' => $reference,
             ]);
 
             $payment = Payment::create([
-                'subscription_id'   => $sub->id,
-                'user_id'           => $data['userId'],
-                'amount'            => $effectiveAmount,
-                'plan_type'         => $group->plan_type,
-                'payment_method'    => $data['paymentMethod'],
-                'phone'             => $data['phone'],
-                'status'            => 'pending',
+                'subscription_id' => $sub->id,
+                'user_id' => $data['userId'],
+                'amount' => $effectiveAmount,
+                'plan_type' => $group->plan_type,
+                'payment_method' => $data['paymentMethod'],
+                'phone' => $data['phone'],
+                'status' => 'pending',
                 'payment_reference' => $reference,
-                'transaction_id'    => $reference,
+                'transaction_id' => $reference,
             ]);
 
             return [$sub, $payment];
         });
 
-        $mmService = new MobileMoneyService();
+        $mmService = new MobileMoneyService;
         $pushResult = $mmService->initiateSTKPush(
             $data['phone'],
             $effectiveAmount,
@@ -225,9 +229,9 @@ class SubscriptionController extends Controller
         }
 
         return response()->json([
-            'subscription'     => $sub->fresh()->load(['payment', 'group']),
+            'subscription' => $sub->fresh()->load(['payment', 'group']),
             'paymentReference' => $reference,
-            'pushResult'       => $pushResult,
+            'pushResult' => $pushResult,
         ], 201);
     }
 
@@ -251,7 +255,7 @@ class SubscriptionController extends Controller
         }
 
         return response()->json([
-            'status'       => $sub->status,
+            'status' => $sub->status,
             'subscription' => $this->formatSub($sub, $sub->status === 'active'),
         ]);
     }
@@ -264,37 +268,37 @@ class SubscriptionController extends Controller
             return;
         }
 
-        $result = (new MobileMoneyService())->queryTransaction($txnId);
+        $result = (new MobileMoneyService)->queryTransaction($txnId);
         if (! ($result['success'] ?? false)) {
             return;
         }
 
-        $now         = now();
-        $expiresAt   = $now->copy()->addSeconds($sub->durationSeconds());
-        $group       = $sub->group;
+        $now = now();
+        $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
+        $group = $sub->group;
         $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
         $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
 
         DB::transaction(function () use ($sub, $now, $expiresAt, $betslipLink, $betslipCode, $txnId) {
             $sub->update([
-                'status'       => 'active',
-                'started_at'   => $now,
-                'expires_at'   => $expiresAt,
+                'status' => 'active',
+                'started_at' => $now,
+                'expires_at' => $expiresAt,
                 'betslip_link' => $betslipLink,
                 'betslip_code' => $betslipCode,
             ]);
 
             if ($sub->payment) {
                 $sub->payment->update([
-                    'status'         => 'confirmed',
+                    'status' => 'confirmed',
                     'transaction_id' => $txnId,
                 ]);
             }
         });
 
-        \Illuminate\Support\Facades\Log::info('Subscription activated during payment-status polling', [
+        Log::info('Subscription activated during payment-status polling', [
             'subscription_id' => $sub->id,
-            'txn_id'          => $txnId,
+            'txn_id' => $txnId,
         ]);
 
         $this->processAgentCommissionSafely($sub, 'provider-query');
@@ -310,23 +314,23 @@ class SubscriptionController extends Controller
         $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
 
         return [
-            'id'               => $sub->id,
-            'status'           => $sub->status,
-            'planType'         => $sub->plan_type,
-            'planName'         => $group?->name ?? null,
-            'oddsType'         => $sub->odds_type,
-            'paymentMethod'    => $sub->payment_method,
+            'id' => $sub->id,
+            'status' => $sub->status,
+            'planType' => $sub->plan_type,
+            'planName' => $group?->name ?? null,
+            'oddsType' => $sub->odds_type,
+            'paymentMethod' => $sub->payment_method,
             'paymentReference' => $sub->payment_reference,
-            'phone'            => $sub->phone,
-            'amount'           => $sub->amount,
-            'betslipLink'      => $includeBetslip ? $betslipLink : '',
-            'betslipCode'      => $includeBetslip ? $betslipCode : '',
-            'packagePhoto'     => $group?->photo_url ?? '',
-            'startedAt'        => $sub->started_at,
-            'expiresAt'        => $sub->expires_at,
-            'createdAt'        => $sub->created_at,
-            'updatedAt'        => $sub->updated_at,
-            'group'            => $group,
+            'phone' => $sub->phone,
+            'amount' => $sub->amount,
+            'betslipLink' => $includeBetslip ? $betslipLink : '',
+            'betslipCode' => $includeBetslip ? $betslipCode : '',
+            'packagePhoto' => $group?->photo_url ?? '',
+            'startedAt' => $sub->started_at,
+            'expiresAt' => $sub->expires_at,
+            'createdAt' => $sub->created_at,
+            'updatedAt' => $sub->updated_at,
+            'group' => $group,
         ];
     }
 
@@ -334,16 +338,16 @@ class SubscriptionController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $data = $request->validate([
-            'status'           => ['sometimes', 'string', 'in:active,rejected,expired,pending'],
+            'status' => ['sometimes', 'string', 'in:active,rejected,expired,pending'],
             'rejection_reason' => ['sometimes', 'nullable', 'string', 'max:500'],
-            'betslip_link'     => ['sometimes', 'nullable', 'string', 'max:500'],
-            'betslip_code'     => ['sometimes', 'nullable', 'string', 'max:100'],
+            'betslip_link' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'betslip_code' => ['sometimes', 'nullable', 'string', 'max:100'],
         ]);
 
         $sub = Subscription::with(['payment', 'group'])->findOrFail($id);
 
         if (($data['status'] ?? null) === 'active') {
-            $now       = now();
+            $now = now();
             $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
 
             // Betslip comes from the group record; admin override is still accepted
@@ -351,9 +355,9 @@ class SubscriptionController extends Controller
             $betslipCode = $data['betslip_code'] ?? ($sub->group?->betslip_code ?? '');
 
             $sub->update([
-                'status'       => 'active',
-                'started_at'   => $now,
-                'expires_at'   => $expiresAt,
+                'status' => 'active',
+                'started_at' => $now,
+                'expires_at' => $expiresAt,
                 'betslip_link' => $betslipLink,
                 'betslip_code' => $betslipCode,
             ]);
@@ -365,7 +369,7 @@ class SubscriptionController extends Controller
             $this->processAgentCommissionSafely($sub->fresh(['payment']), 'admin-activation');
         } elseif (($data['status'] ?? null) === 'rejected') {
             $sub->update([
-                'status'           => 'rejected',
+                'status' => 'rejected',
                 'rejection_reason' => $data['rejection_reason'] ?? null,
             ]);
         } else {
@@ -381,11 +385,11 @@ class SubscriptionController extends Controller
         $sub = Subscription::findOrFail($id);
 
         $currentExpiry = $sub->expires_at ?? now();
-        $newExpiry     = $currentExpiry->addSeconds($sub->durationSeconds());
+        $newExpiry = $currentExpiry->addSeconds($sub->durationSeconds());
 
         $sub->update([
             'expires_at' => $newExpiry,
-            'status'     => 'active',
+            'status' => 'active',
         ]);
 
         return response()->json($sub->fresh());
@@ -428,59 +432,59 @@ class SubscriptionController extends Controller
 
         if (! in_array($sub->status, ['pending', 'failed'], true)) {
             return response()->json([
-                'error' => 'This subscription is already ' . $sub->status . '. No action needed.',
+                'error' => 'This subscription is already '.$sub->status.'. No action needed.',
             ], 409);
         }
 
-        $txnId     = $data['transactionId'];
-        $mmService = new MobileMoneyService();
-        $result    = $mmService->queryTransaction($txnId);
+        $txnId = $data['transactionId'];
+        $mmService = new MobileMoneyService;
+        $result = $mmService->queryTransaction($txnId);
 
         if (! $result['success']) {
-            \Illuminate\Support\Facades\Log::warning('submitTransaction: verification failed', [
+            Log::warning('submitTransaction: verification failed', [
                 'subscription_id' => $sub->id,
-                'txn_id'          => $txnId,
-                'reason'          => $result['message'] ?? 'unknown',
+                'txn_id' => $txnId,
+                'reason' => $result['message'] ?? 'unknown',
             ]);
 
             return response()->json([
-                'error'    => $result['message'] ?? 'Transaction ID could not be verified. Please check and try again.',
+                'error' => $result['message'] ?? 'Transaction ID could not be verified. Please check and try again.',
                 'verified' => false,
             ], 422);
         }
 
         // Valid — activate the subscription
-        $now         = now();
-        $expiresAt   = $now->copy()->addSeconds($sub->durationSeconds());
-        $group       = $sub->group;
+        $now = now();
+        $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
+        $group = $sub->group;
         $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
         $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
 
         $sub->update([
-            'status'       => 'active',
-            'started_at'   => $now,
-            'expires_at'   => $expiresAt,
+            'status' => 'active',
+            'started_at' => $now,
+            'expires_at' => $expiresAt,
             'betslip_link' => $betslipLink,
             'betslip_code' => $betslipCode,
         ]);
 
         if ($sub->payment) {
             $sub->payment->update([
-                'status'         => 'confirmed',
+                'status' => 'confirmed',
                 'transaction_id' => $txnId,
             ]);
         }
 
-        \Illuminate\Support\Facades\Log::info('Subscription activated via user-submitted transaction ID', [
+        Log::info('Subscription activated via user-submitted transaction ID', [
             'subscription_id' => $sub->id,
-            'txn_id'          => $txnId,
+            'txn_id' => $txnId,
         ]);
 
         $this->processAgentCommissionSafely($sub, 'user-submitted-transaction');
 
         return response()->json([
-            'verified'     => true,
-            'message'      => 'Payment verified! Your subscription is now active.',
+            'verified' => true,
+            'message' => 'Payment verified! Your subscription is now active.',
             'subscription' => $this->formatSub($sub->fresh()->load(['group']), true),
         ]);
     }
@@ -492,13 +496,13 @@ class SubscriptionController extends Controller
         }
 
         try {
-            (new MobileMoneyService())->processAgentCommission($sub->payment->fresh(), $source);
+            (new MobileMoneyService)->processAgentCommission($sub->payment->fresh(), $source);
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::error('Subscription activation: agent commission processing failed.', [
-                'source'          => $source,
+            Log::error('Subscription activation: agent commission processing failed.', [
+                'source' => $source,
                 'subscription_id' => $sub->id,
-                'payment_id'      => $sub->payment->id,
-                'error'           => $e->getMessage(),
+                'payment_id' => $sub->payment->id,
+                'error' => $e->getMessage(),
             ]);
         }
     }
