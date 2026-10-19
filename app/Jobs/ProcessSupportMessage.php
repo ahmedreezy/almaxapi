@@ -4,12 +4,14 @@ namespace App\Jobs;
 
 use App\Models\SupportConversation;
 use App\Models\SupportMessage;
+use App\Services\Support\OpenAiMediaService;
 use App\Services\Support\OpenAiSupportService;
 use App\Services\Support\SupportFastReplyService;
 use App\Services\Support\SupportQuotaService;
 use App\Services\Support\TwilioWhatsAppService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -32,11 +34,12 @@ class ProcessSupportMessage implements ShouldQueue
 
     public function handle(
         OpenAiSupportService $agent,
+        OpenAiMediaService $media,
         SupportFastReplyService $fastReplies,
         SupportQuotaService $quota,
         TwilioWhatsAppService $twilio,
     ): void {
-        $incoming = SupportMessage::with('conversation.contact')->find($this->messageId);
+        $incoming = SupportMessage::with(['conversation.contact', 'attachments'])->find($this->messageId);
         if (! $incoming || $incoming->direction !== 'inbound') {
             return;
         }
@@ -54,6 +57,10 @@ class ProcessSupportMessage implements ShouldQueue
             return;
         }
 
+        if ($conversation->mode === 'human') {
+            return;
+        }
+
         $jobStartedAt = now();
         $jobStartedNs = hrtime(true);
         $receivedAt = $incoming->sent_at ?? $incoming->created_at;
@@ -66,16 +73,7 @@ class ProcessSupportMessage implements ShouldQueue
             'queue_wait_ms' => $queueWaitMs,
         ]);
 
-        if ($conversation->mode !== 'ai' || in_array($conversation->status, ['waiting_human', 'human'], true)) {
-            $conversation->update([
-                'mode' => 'ai',
-                'status' => 'open',
-                'assigned_admin_id' => null,
-                'human_requested_at' => null,
-            ]);
-        }
-
-        if ((int) data_get($incoming->metadata, 'num_media', 0) > 0 && trim($incoming->body) === '') {
+        if ($contact->channel !== 'platform' && (int) data_get($incoming->metadata, 'num_media', 0) > 0 && trim($incoming->body) === '') {
             $this->sendOperationalMessage($conversation, $twilio, (string) config('support.text_only_message'));
 
             return;
@@ -92,18 +90,31 @@ class ProcessSupportMessage implements ShouldQueue
 
         $usage = ['input_tokens' => 0, 'output_tokens' => 0];
         try {
+            $audio = $incoming->attachments->firstWhere('kind', 'audio');
+            if ($audio) {
+                $transcript = $media->transcribe($audio);
+                $incoming->body = trim(implode("\n\n", array_filter([
+                    trim($incoming->body),
+                    'Voice note transcript: '.$transcript,
+                ])));
+                $incoming->save();
+            } elseif (trim($incoming->body) === '' && $incoming->attachments->where('kind', 'image')->isNotEmpty()) {
+                $incoming->body = 'Please interpret the attached image or screenshot and help with what it shows.';
+                $incoming->save();
+            }
+
             $result = $fastReplies->respond($conversation, $incoming)
                 ?? $agent->respond($conversation, $incoming);
             $usage = $result;
 
             $conversation->refresh();
-            if ($conversation->status === 'resolved') {
+            if ($conversation->status === 'resolved' || $conversation->mode === 'human') {
                 $quota->release($contact, $result['input_tokens'], $result['output_tokens']);
 
                 return;
             }
 
-            $conversation->update([
+            $conversationChanges = [
                 'category' => $result['category'],
                 'sentiment' => $result['sentiment'],
                 'priority' => $result['priority'],
@@ -113,15 +124,12 @@ class ProcessSupportMessage implements ShouldQueue
                 'assigned_admin_id' => null,
                 'human_requested_at' => null,
                 'resolved_at' => $result['resolved'] ? now() : null,
-            ]);
-
+            ];
             if ($result['resolved']) {
-                $conversation->update(['status' => 'resolved']);
+                $conversationChanges['status'] = 'resolved';
             }
 
             $reply = trim($result['reply']);
-
-            $sent = $this->deliver($conversation, $twilio, $reply);
             $processingMs = (int) round((hrtime(true) - $jobStartedNs) / 1_000_000);
             $totalResponseMs = $receivedAt
                 ? (int) max(0, $receivedAt->diffInMilliseconds(now()))
@@ -131,13 +139,12 @@ class ProcessSupportMessage implements ShouldQueue
                 'processing_ms' => $processingMs,
                 'total_response_ms' => $totalResponseMs,
             ], (array) ($result['performance'] ?? []));
-            SupportMessage::create([
+
+            $messageData = [
                 'conversation_id' => $conversation->id,
                 'direction' => 'outbound',
                 'sender_type' => 'ai',
                 'body' => $reply,
-                'provider_message_id' => $sent['sid'] ?: null,
-                'delivery_status' => $sent['status'],
                 'metadata' => [
                     'action' => $result['action'],
                     'in_reply_to' => $incoming->id,
@@ -147,8 +154,36 @@ class ProcessSupportMessage implements ShouldQueue
                 'output_tokens' => $result['output_tokens'],
                 'model' => $result['model'],
                 'sent_at' => now(),
-            ]);
-            $conversation->update(['last_message_at' => now()]);
+            ];
+
+            if ($contact->channel === 'platform') {
+                $stored = DB::transaction(function () use ($conversation, $conversationChanges, $messageData) {
+                    $locked = SupportConversation::lockForUpdate()->findOrFail($conversation->id);
+                    if ($locked->mode === 'human' || $locked->status === 'resolved') {
+                        return false;
+                    }
+                    $locked->update(array_merge($conversationChanges, ['last_message_at' => now()]));
+                    SupportMessage::create(array_merge($messageData, [
+                        'provider_message_id' => null,
+                        'delivery_status' => 'delivered',
+                    ]));
+
+                    return true;
+                });
+                if (! $stored) {
+                    $quota->release($contact, $result['input_tokens'], $result['output_tokens']);
+
+                    return;
+                }
+            } else {
+                $conversation->update($conversationChanges);
+                $sent = $this->deliver($conversation, $twilio, $reply);
+                SupportMessage::create(array_merge($messageData, [
+                    'provider_message_id' => $sent['sid'] ?: null,
+                    'delivery_status' => $sent['status'],
+                ]));
+                $conversation->update(['last_message_at' => now()]);
+            }
             $quota->consume($contact, $result['input_tokens'], $result['output_tokens']);
 
             Log::info('Support message processing completed', [
@@ -159,13 +194,10 @@ class ProcessSupportMessage implements ShouldQueue
             ]);
         } catch (Throwable $e) {
             $quota->release($contact, (int) ($usage['input_tokens'] ?? 0), (int) ($usage['output_tokens'] ?? 0));
-            $conversation->update([
-                'mode' => 'ai',
-                'status' => 'open',
-                'priority' => 'high',
-                'assigned_admin_id' => null,
-                'human_requested_at' => null,
-            ]);
+            $conversation->refresh();
+            if ($conversation->mode !== 'human') {
+                $conversation->update(['mode' => 'ai', 'status' => 'open', 'priority' => 'high']);
+            }
             Log::error('Support message processing failed', [
                 'message_id' => $incoming->id,
                 'conversation_id' => $conversation->id,
@@ -175,6 +207,9 @@ class ProcessSupportMessage implements ShouldQueue
             ]);
 
             try {
+                if ($conversation->mode === 'human') {
+                    return;
+                }
                 $this->sendOperationalMessage($conversation, $twilio, (string) config('support.fallback_message'));
             } catch (Throwable $sendError) {
                 Log::error('Support fallback send failed', ['error' => $sendError->getMessage()]);
@@ -202,14 +237,11 @@ class ProcessSupportMessage implements ShouldQueue
             return;
         }
 
-        $conversation->update([
-            'mode' => 'ai',
-            'status' => 'open',
-            'priority' => 'high',
-            'assigned_admin_id' => null,
-            'human_requested_at' => null,
-            'resolved_at' => null,
-        ]);
+        $conversation->refresh();
+        if ($conversation->mode === 'human') {
+            return;
+        }
+        $conversation->update(['mode' => 'ai', 'status' => 'open', 'priority' => 'high', 'resolved_at' => null]);
 
         try {
             app(SupportQuotaService::class)->release($conversation->contact);

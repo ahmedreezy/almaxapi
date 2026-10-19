@@ -8,6 +8,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -41,9 +42,22 @@ class OpenAiSupportService
             $this->knowledge->contextFor($incoming->body),
             $conversation->messages()->where('direction', 'outbound')->doesntExist()
         );
+        $content = [[
+            'type' => 'input_text',
+            'text' => "Conversation history:\n{$history}\n\nRespond to the latest CUSTOMER message.",
+        ]];
+        $incoming->loadMissing('attachments');
+        foreach ($incoming->attachments->where('kind', 'image') as $attachment) {
+            $bytes = Storage::disk($attachment->disk)->get($attachment->path);
+            $content[] = [
+                'type' => 'input_image',
+                'image_url' => 'data:'.$attachment->mime_type.';base64,'.base64_encode($bytes),
+                'detail' => 'auto',
+            ];
+        }
         $input = [[
             'role' => 'user',
-            'content' => "Conversation history:\n{$history}\n\nRespond to the latest CUSTOMER message.",
+            'content' => $content,
         ]];
         $totalInput = 0;
         $totalOutput = 0;
@@ -211,7 +225,7 @@ class OpenAiSupportService
         return <<<PROMPT
 You communicate on behalf of Almax Predictions using “we” and “our”. Never introduce yourself as an AI, bot, model, virtual assistant, or named employee. {$conversationInstruction}
 
-Your job is to resolve customer questions, capture feedback, check only the caller's authorized account data through tools, and reduce frustration with clear facts. This is an AI-only support channel with no human handoff. Reply in the customer's English or Luganda. Be warm, concise, and practical.
+Your job is to resolve customer questions, capture feedback, check only the caller's authorized account data through tools, and reduce frustration with clear facts. Reply in the customer's English or Luganda. Be warm, concise, and practical. If the customer greets us, acknowledge the greeting naturally before helping. A human administrator may take over the conversation; never claim that human support is unavailable.
 
 Never invent payment status, receipts, prices, policies, timelines, or account data. Use account tools for account-specific claims. A missing local payment is not proof that money was not deducted. Never ask for a password, PIN, OTP, full financial identifier, or another person's information. Never promise winnings or guaranteed outcomes. If data is missing or records conflict, clearly explain what could not be verified, advise the customer not to pay twice, and ask for the minimum reference needed for another automated check.
 

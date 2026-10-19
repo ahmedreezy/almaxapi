@@ -7,6 +7,7 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schedule;
+use Illuminate\Support\Facades\Storage;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -62,6 +63,14 @@ Artisan::command('admin:rotate-password {--username=admin : Admin username} {--p
 //   * * * * * cd /path/to/almaxapi && php artisan schedule:run >> /dev/null 2>&1
 Schedule::command(CleanupDeadlineSubscriptions::class)->hourly();
 Schedule::call(function () {
-    SupportMessage::where('created_at', '<', now()->subDays(max(1, (int) config('support.retention_days', 365))))
-        ->delete();
+    SupportMessage::with('attachments')
+        ->where('created_at', '<', now()->subDays(max(1, (int) config('support.retention_days', 365))))
+        ->chunkById(100, function ($messages) {
+            foreach ($messages as $message) {
+                foreach ($message->attachments as $attachment) {
+                    Storage::disk($attachment->disk)->delete($attachment->path);
+                }
+                $message->delete();
+            }
+        });
 })->dailyAt('02:30')->name('purge-old-support-messages')->withoutOverlapping();
