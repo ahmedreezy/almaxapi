@@ -93,6 +93,7 @@ return [
             'username' => env('DB_USERNAME', 'root'),
             'password' => env('DB_PASSWORD', ''),
             'charset' => env('DB_CHARSET', 'utf8'),
+            'timezone' => env('DB_TIMEZONE', env('APP_TIMEZONE', 'Africa/Nairobi')),
             'prefix' => '',
             'prefix_indexes' => true,
             'search_path' => 'public',
