@@ -141,6 +141,7 @@ Route::prefix('groups')->group(function () {
 Route::prefix('package-releases')->group(function () {
     Route::get('/', [PackageReleaseController::class, 'index'])->middleware('auth.admin');
     Route::post('/', [PackageReleaseController::class, 'store'])->middleware('auth.admin');
+    Route::post('/recovery', [PackageReleaseController::class, 'recovery'])->middleware('auth.admin');
     Route::post('/{release}/result', [PackageReleaseController::class, 'result'])->middleware('auth.admin');
     Route::get('/recoveries/me', [PackageReleaseController::class, 'recoveries'])->middleware('auth.user');
 });
