@@ -61,10 +61,11 @@ class SupportFastReplyService
     {
         $luganda = (bool) preg_match('/\b(gyebale|oli otya|wasuze otya|osibye otya)\b/u', $message);
         $reply = $luganda
-            ? 'Gyebale ko! Tukuyambe tutya leero?'
-            : (str_contains($message, 'morning') ? 'Good morning! How can we help you today?'
-                : (str_contains($message, 'evening') ? 'Good evening! How can we help you today?'
-                    : 'Hello! How can we help you today?'));
+            ? 'Gyebale ko!'
+            : (str_contains($message, 'morning') ? 'Good morning!'
+                : (str_contains($message, 'afternoon') ? 'Good afternoon!'
+                    : (str_contains($message, 'evening') ? 'Good evening!'
+                        : 'Hello!')));
 
         return [
             'reply' => $reply,

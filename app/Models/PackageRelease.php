@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class PackageRelease extends Model
@@ -38,6 +39,26 @@ class PackageRelease extends Model
     public function recovery(): HasMany
     {
         return $this->hasMany(self::class, 'parent_release_id');
+    }
+
+    public function recoverySources(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            self::class,
+            'package_release_recovery_sources',
+            'recovery_release_id',
+            'source_release_id'
+        )->withTimestamps();
+    }
+
+    public function sharedRecoveries(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            self::class,
+            'package_release_recovery_sources',
+            'source_release_id',
+            'recovery_release_id'
+        )->withTimestamps();
     }
 
     public function entitlements(): HasMany

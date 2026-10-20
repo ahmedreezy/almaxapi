@@ -31,7 +31,7 @@ class MultimodalSupportAndRecoveryTest extends TestCase
             'clientMessageId' => (string) Str::uuid(),
         ])->assertOk()
             ->assertJsonPath('processing', 'complete')
-            ->assertJsonPath('conversation.messages.1.body', 'Good morning! How can we help you today?');
+            ->assertJsonPath('conversation.messages.1.body', 'Good morning!');
 
         $this->assertDatabaseHas('support_messages', [
             'sender_type' => 'ai',
@@ -198,6 +198,53 @@ class MultimodalSupportAndRecoveryTest extends TestCase
                 'recoveryBetslipCode' => 'SECOND',
             ])->assertStatus(409);
         $this->assertDatabaseCount('package_releases', 2);
+    }
+
+    public function test_one_recovery_ticket_can_cover_multiple_failed_packages(): void
+    {
+        $admin = $this->createAdmin();
+        $firstUser = $this->createUser('0700000011');
+        $secondUser = $this->createUser('0700000012');
+        $groups = Group::query()->limit(2)->get();
+        $publishedAt = now()->subHours(3);
+        $cutoff = now()->subHour();
+
+        $firstSubscription = $this->subscriptionFor($firstUser['user']->id, $groups[0]->id, $publishedAt);
+        $secondSubscription = $this->subscriptionFor($secondUser['user']->id, $groups[1]->id, $publishedAt);
+        $this->paymentFor($firstSubscription, 'confirmed');
+        $this->paymentFor($secondSubscription, 'confirmed');
+
+        $releases = $groups->map(fn (Group $group, int $index) => PackageRelease::create([
+            'public_id' => (string) Str::uuid(),
+            'group_id' => $group->id,
+            'type' => 'paid',
+            'betslip_link' => 'https://example.test/paid-'.($index + 1),
+            'betslip_code' => 'PAID'.($index + 1),
+            'published_at' => $publishedAt,
+            'cutoff_at' => $cutoff,
+            'result' => 'pending',
+        ]));
+
+        $this->withHeaders($admin['headers'])
+            ->postJson('/api/package-releases/recovery', [
+                'releaseIds' => $releases->pluck('public_id')->all(),
+                'recoveryBetslipLink' => 'https://example.test/shared-recovery',
+                'recoveryBetslipCode' => 'SHARED1',
+            ])->assertOk()
+            ->assertJsonPath('recovery.betslip_code', 'SHARED1')
+            ->assertJsonCount(2, 'recovery.recovery_sources')
+            ->assertJsonCount(2, 'releases');
+
+        foreach ($releases as $release) {
+            $this->assertDatabaseHas('package_releases', [
+                'id' => $release->id,
+                'result' => 'failed',
+            ]);
+        }
+        $this->assertDatabaseCount('package_release_recovery_sources', 2);
+        $this->assertDatabaseCount('package_release_entitlements', 2);
+        $this->assertDatabaseCount('user_notifications', 2);
+        $this->assertDatabaseCount('package_releases', 3);
     }
 
     private function subscriptionFor(int $userId, int $groupId, $publishedAt): Subscription
