@@ -28,7 +28,9 @@ class PackageReleaseController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'groupId' => ['required', 'integer', 'exists:groups,id'],
+            'groupId' => ['required_without:groupIds', 'integer', 'exists:groups,id'],
+            'groupIds' => ['required_without:groupId', 'array', 'min:1'],
+            'groupIds.*' => ['required', 'integer', 'distinct', 'exists:groups,id'],
             'betslipLink' => ['sometimes', 'nullable', 'url', 'max:500'],
             'betslipCode' => ['sometimes', 'nullable', 'string', 'max:100'],
             'cutoffAt' => ['required', 'date', 'after:now'],
@@ -37,32 +39,47 @@ class PackageReleaseController extends Controller
             return response()->json(['message' => 'Add a betslip link or code.'], 422);
         }
 
-        $release = DB::transaction(function () use ($data) {
-            $group = Group::lockForUpdate()->findOrFail($data['groupId']);
-            $release = PackageRelease::create([
-                'public_id' => (string) Str::uuid(),
-                'group_id' => $group->id,
-                'type' => 'paid',
-                'betslip_link' => trim((string) ($data['betslipLink'] ?? '')),
-                'betslip_code' => trim((string) ($data['betslipCode'] ?? '')),
-                'published_at' => now(),
-                'cutoff_at' => $data['cutoffAt'],
-                'result' => 'pending',
-            ]);
-            $group->update([
-                'betslip_link' => $release->betslip_link,
-                'betslip_code' => $release->betslip_code,
-                'subscription_deadline' => $release->cutoff_at->format('Y-m-d\TH:i'),
-            ]);
-            Subscription::where('group_id', $group->id)->where('status', 'active')->update([
-                'betslip_link' => $release->betslip_link,
-                'betslip_code' => $release->betslip_code,
-            ]);
+        $groupIds = collect($data['groupIds'] ?? [$data['groupId']])->unique()->values();
+        $releases = DB::transaction(function () use ($data, $groupIds) {
+            $groups = Group::query()
+                ->whereIn('id', $groupIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
 
-            return $release;
+            return $groupIds->map(function (int $groupId) use ($data, $groups) {
+                $group = $groups->get($groupId);
+                abort_unless($group, 422, 'One or more selected packages no longer exist.');
+
+                $release = PackageRelease::create([
+                    'public_id' => (string) Str::uuid(),
+                    'group_id' => $group->id,
+                    'type' => 'paid',
+                    'betslip_link' => trim((string) ($data['betslipLink'] ?? '')),
+                    'betslip_code' => trim((string) ($data['betslipCode'] ?? '')),
+                    'published_at' => now(),
+                    'cutoff_at' => $data['cutoffAt'],
+                    'result' => 'pending',
+                ]);
+                $group->update([
+                    'betslip_link' => $release->betslip_link,
+                    'betslip_code' => $release->betslip_code,
+                    'subscription_deadline' => $release->cutoff_at->format('Y-m-d\TH:i'),
+                ]);
+                Subscription::where('group_id', $group->id)->where('status', 'active')->update([
+                    'betslip_link' => $release->betslip_link,
+                    'betslip_code' => $release->betslip_code,
+                ]);
+
+                return $release->load('group');
+            });
         });
 
-        return response()->json($release->load('group'), 201);
+        if (array_key_exists('groupId', $data) && ! array_key_exists('groupIds', $data)) {
+            return response()->json($releases->first(), 201);
+        }
+
+        return response()->json(['releases' => $releases->values()], 201);
     }
 
     public function result(Request $request, PackageRelease $release): JsonResponse
