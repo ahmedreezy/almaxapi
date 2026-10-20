@@ -150,6 +150,35 @@ class MultimodalSupportAndRecoveryTest extends TestCase
         Queue::assertPushed(ProcessSupportMessage::class, fn ($job) => $job->messageId === $latestInbound->id);
     }
 
+    public function test_admin_can_publish_one_ticket_to_multiple_packages(): void
+    {
+        $admin = $this->createAdmin();
+        $groups = Group::query()->limit(2)->get();
+
+        $this->withHeaders($admin['headers'])
+            ->postJson('/api/package-releases', [
+                'groupIds' => $groups->pluck('id')->all(),
+                'betslipLink' => 'https://example.test/shared-ticket',
+                'betslipCode' => 'SHARED10',
+                'cutoffAt' => now()->addHour()->toISOString(),
+            ])->assertCreated()
+            ->assertJsonCount(2, 'releases')
+            ->assertJsonPath('releases.0.betslip_code', 'SHARED10')
+            ->assertJsonPath('releases.1.betslip_code', 'SHARED10');
+
+        foreach ($groups as $group) {
+            $this->assertDatabaseHas('package_releases', [
+                'group_id' => $group->id,
+                'betslip_code' => 'SHARED10',
+                'result' => 'pending',
+            ]);
+            $this->assertDatabaseHas('groups', [
+                'id' => $group->id,
+                'betslip_code' => 'SHARED10',
+            ]);
+        }
+    }
+
     public function test_failed_release_grants_one_recovery_only_to_confirmed_eligible_users(): void
     {
         $admin = $this->createAdmin();
