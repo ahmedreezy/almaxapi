@@ -6,6 +6,7 @@ use App\Models\AdminUser;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -24,6 +25,71 @@ class DeveloperAnalyticsTest extends TestCase
         $token = $dev->createToken('dev-token', ['role:developer'])->plainTextToken;
 
         return ['Authorization' => "Bearer {$token}"];
+    }
+
+    public function test_today_revenue_uses_confirmation_time_and_exposes_auditable_attempt_totals(): void
+    {
+        Config::set('app.timezone', 'Africa/Kampala');
+        Carbon::setTestNow(Carbon::parse('2026-10-22 12:00:00', 'Africa/Kampala'));
+
+        try {
+            $user = User::create([
+                'username' => 'Revenue Audit Member',
+                'phone' => '0700777010',
+                'password_hash' => Hash::make('password123'),
+            ]);
+            $sub = Subscription::create([
+                'user_id' => $user->id,
+                'odds_type' => '2',
+                'plan_type' => 'daily',
+                'payment_method' => 'airtel',
+                'phone' => $user->phone,
+                'amount' => 1000,
+                'status' => 'active',
+            ]);
+
+            Payment::create([
+                'subscription_id' => $sub->id,
+                'user_id' => $user->id,
+                'amount' => 1000,
+                'plan_type' => 'daily',
+                'payment_method' => 'airtel',
+                'phone' => $user->phone,
+                'status' => 'confirmed',
+                'transaction_id' => 'TX-CONFIRMED-TODAY',
+                'created_at' => now()->subDay(),
+                'confirmed_at' => now(),
+            ]);
+            Payment::create([
+                'subscription_id' => $sub->id,
+                'user_id' => $user->id,
+                'amount' => 5000,
+                'plan_type' => 'daily',
+                'payment_method' => 'airtel',
+                'phone' => $user->phone,
+                'status' => 'failed',
+                'created_at' => now(),
+                'failed_at' => now(),
+                'failure_category' => 'provider',
+            ]);
+
+            $response = $this->withHeaders($this->developerHeaders())
+                ->getJson('/api/analytics/developer')
+                ->assertStatus(200);
+
+            $response->assertJsonPath('finance.revenue_today', 1000)
+                ->assertJsonPath('finance.today.confirmed_count', 1)
+                ->assertJsonPath('finance.today.confirmed_amount', 1000)
+                ->assertJsonPath('finance.today.attempted_count', 1)
+                ->assertJsonPath('finance.today.attempted_amount', 5000)
+                ->assertJsonPath('finance.today.failed_count', 1)
+                ->assertJsonPath('finance.audit.status_count_difference', 0)
+                ->assertJsonPath('finance.audit.status_amount_difference', 0)
+                ->assertJsonPath('finance.audit.confirmed_missing_timestamp_count', 0)
+                ->assertJsonCount(2, 'finance.recent_payments');
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_commission_analytics_reports_current_rate_and_preserves_historical_amounts(): void

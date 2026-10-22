@@ -9,6 +9,7 @@ use App\Services\MobileMoneyService;
 use App\Services\PaymentFailureAlertService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -28,6 +29,7 @@ class PaymentController extends Controller
 
         $from = $data['from'] ?? null;
         $to   = $data['to']   ?? null;
+        $timezone = (string) config('app.timezone', 'Africa/Kampala');
 
         $base = Payment::query();
         if ($from) {
@@ -39,6 +41,30 @@ class PaymentController extends Controller
 
         $summary = (clone $base)
             ->selectRaw('COUNT(*) as total_payments, COALESCE(SUM(amount), 0) as total_amount')
+            ->first();
+
+        $confirmedBase = Payment::query()->where('status', 'confirmed');
+        if ($from) {
+            $fromStart = Carbon::parse($from, $timezone)->startOfDay();
+            $confirmedBase->where(function ($query) use ($fromStart) {
+                $query->where('confirmed_at', '>=', $fromStart)
+                    ->orWhere(function ($legacy) use ($fromStart) {
+                        $legacy->whereNull('confirmed_at')->where('created_at', '>=', $fromStart);
+                    });
+            });
+        }
+        if ($to) {
+            $toExclusive = Carbon::parse($to, $timezone)->addDay()->startOfDay();
+            $confirmedBase->where(function ($query) use ($toExclusive) {
+                $query->where('confirmed_at', '<', $toExclusive)
+                    ->orWhere(function ($legacy) use ($toExclusive) {
+                        $legacy->whereNull('confirmed_at')->where('created_at', '<', $toExclusive);
+                    });
+            });
+        }
+
+        $confirmedSummary = (clone $confirmedBase)
+            ->selectRaw('COUNT(*) as confirmed_payments, COALESCE(SUM(amount), 0) as confirmed_amount')
             ->first();
 
         $byStatus = (clone $base)
@@ -67,9 +93,16 @@ class PaymentController extends Controller
 
         return response()->json([
             'range' => ['from' => $from, 'to' => $to],
+            'timezone' => $timezone,
+            'period_semantics' => [
+                'attempts' => 'created_at',
+                'revenue' => 'confirmed_at',
+            ],
             'summary' => [
                 'totalPayments' => (int) ($summary?->total_payments ?? 0),
                 'totalAmount'   => (float) ($summary?->total_amount ?? 0),
+                'confirmedPayments' => (int) ($confirmedSummary?->confirmed_payments ?? 0),
+                'confirmedAmount' => (float) ($confirmedSummary?->confirmed_amount ?? 0),
             ],
             'byStatus' => $byStatus,
             'byMethod' => $byMethod,
@@ -386,6 +419,7 @@ class PaymentController extends Controller
             if ($sub->payment) {
                 $sub->payment->update([
                     'status'            => 'confirmed',
+                    'confirmed_at'      => $sub->payment->confirmed_at ?: $now,
                     'transaction_id'    => $txnId ?: $sub->payment->transaction_id,
                     'payment_reference' => $sub->payment_reference,
                     'failure_category' => null,

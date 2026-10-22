@@ -72,6 +72,25 @@ class DeveloperAnalyticsController extends Controller
             ->sum('agent_commission_amount');
     }
 
+    private function applyConfirmationWindow($query, Carbon $start, ?Carbon $end = null)
+    {
+        return $query->where(function ($window) use ($start, $end) {
+            $window->where(function ($confirmed) use ($start, $end) {
+                $confirmed->whereNotNull('confirmed_at')
+                    ->where('confirmed_at', '>=', $start);
+                if ($end) {
+                    $confirmed->where('confirmed_at', '<', $end);
+                }
+            })->orWhere(function ($legacy) use ($start, $end) {
+                $legacy->whereNull('confirmed_at')
+                    ->where('created_at', '>=', $start);
+                if ($end) {
+                    $legacy->where('created_at', '<', $end);
+                }
+            });
+        });
+    }
+
     private function commissionWithdrawals()
     {
         if (! Schema::hasTable('commission_withdrawals')) {
@@ -99,8 +118,10 @@ class DeveloperAnalyticsController extends Controller
 
     public function index(): JsonResponse
     {
-        $now = now();
+        $timezone = (string) config('app.timezone', 'Africa/Kampala');
+        $now = now($timezone);
         $todayStart = $now->copy()->startOfDay();
+        $tomorrowStart = $todayStart->copy()->addDay();
         $weekStart = $now->copy()->startOfWeek();
         $monthStart = $now->copy()->startOfMonth();
         $last30 = $now->copy()->subDays(29)->startOfDay();
@@ -123,7 +144,23 @@ class DeveloperAnalyticsController extends Controller
         $attemptedAmount = (float) $paymentsByStatus->sum(fn ($row) => (float) $row->total);
         $knownStatuses = ['confirmed', 'pending', 'failed'];
         $unclassifiedRows = $paymentsByStatus->reject(fn ($row, $status) => in_array($status, $knownStatuses, true));
+        $accountedCount = (int) $paymentsByStatus->sum(fn ($row) => (int) $row->cnt);
         $accountedAmount = (float) $paymentsByStatus->sum(fn ($row) => (float) $row->total);
+
+        $ledgerTotals = DB::table('payments')
+            ->selectRaw('COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total')
+            ->first();
+
+        $todayAttemptsByStatus = DB::table('payments')
+            ->select('status', DB::raw('COUNT(*) as cnt'), DB::raw('COALESCE(SUM(amount), 0) as total'))
+            ->where('created_at', '>=', $todayStart)
+            ->where('created_at', '<', $tomorrowStart)
+            ->groupBy('status')
+            ->get()
+            ->keyBy('status');
+
+        $todayAttemptCount = (int) $todayAttemptsByStatus->sum(fn ($row) => (int) $row->cnt);
+        $todayAttemptAmount = (float) $todayAttemptsByStatus->sum(fn ($row) => (float) $row->total);
 
         $failuresByCategory = DB::table('payments')
             ->select('failure_category', DB::raw('COUNT(*) as cnt'), DB::raw('COALESCE(SUM(amount), 0) as total'))
@@ -137,20 +174,18 @@ class DeveloperAnalyticsController extends Controller
                 'amount' => (float) $row->total,
             ]);
 
-        $revenueToday = (float) DB::table('payments')
-            ->where('status', 'confirmed')
-            ->where('created_at', '>=', $todayStart)
-            ->sum('amount');
+        $todayConfirmedScope = DB::table('payments')->where('status', 'confirmed');
+        $this->applyConfirmationWindow($todayConfirmedScope, $todayStart, $tomorrowStart);
+        $revenueToday = (float) (clone $todayConfirmedScope)->sum('amount');
+        $confirmedTodayCount = (int) (clone $todayConfirmedScope)->count();
 
-        $revenueWeek = (float) DB::table('payments')
-            ->where('status', 'confirmed')
-            ->where('created_at', '>=', $weekStart)
-            ->sum('amount');
+        $weekConfirmedScope = DB::table('payments')->where('status', 'confirmed');
+        $this->applyConfirmationWindow($weekConfirmedScope, $weekStart, $tomorrowStart);
+        $revenueWeek = (float) $weekConfirmedScope->sum('amount');
 
-        $revenueMonth = (float) DB::table('payments')
-            ->where('status', 'confirmed')
-            ->where('created_at', '>=', $monthStart)
-            ->sum('amount');
+        $monthConfirmedScope = DB::table('payments')->where('status', 'confirmed');
+        $this->applyConfirmationWindow($monthConfirmedScope, $monthStart, $tomorrowStart);
+        $revenueMonth = (float) $monthConfirmedScope->sum('amount');
 
         $revenueByPlan = DB::table('payments')
             ->select('plan_type', DB::raw('COALESCE(SUM(amount), 0) as total'))
@@ -251,26 +286,63 @@ class DeveloperAnalyticsController extends Controller
             ->groupBy('plan_type')
             ->pluck('cnt', 'plan_type');
 
+        // ── Ledger audit ──────────────────────────────────────────────────
+        $confirmedMissingTimestamp = DB::table('payments')
+            ->where('status', 'confirmed')
+            ->whereNull('confirmed_at');
+        $confirmedMissingTransaction = DB::table('payments')
+            ->where('status', 'confirmed')
+            ->where(function ($query) {
+                $query->whereNull('transaction_id')->orWhere('transaction_id', '');
+            });
+        $orphanedSubscriptions = DB::table('payments')->whereNull('subscription_id');
+        $orphanedUsers = DB::table('payments')->whereNull('user_id');
+
+        $recentPayments = DB::table('payments')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->limit(50)
+            ->get([
+                'id', 'amount', 'plan_type', 'payment_method', 'phone', 'status',
+                'payment_reference', 'transaction_id', 'confirmed_at', 'failed_at',
+                'failure_category', 'failure_reason', 'subscription_id', 'user_id', 'created_at',
+            ])
+            ->map(function ($payment) {
+                $phone = (string) $payment->phone;
+                $payment->phone = strlen($phone) > 4
+                    ? str_repeat('*', strlen($phone) - 4).substr($phone, -4)
+                    : $phone;
+
+                return $payment;
+            });
+
         // ── Charts (last 30 days) ──────────────────────────────────────────
-        // Using (timestamptz AT TIME ZONE 'UTC')::date for deterministic UTC dates
+        $sqlTimezone = str_replace("'", "''", $timezone);
+        $confirmationDateSql = "(COALESCE(confirmed_at, created_at) AT TIME ZONE '{$sqlTimezone}')::date";
+        $signupDateSql = "(created_at AT TIME ZONE '{$sqlTimezone}')::date";
         $revenueChart = DB::table('payments')
             ->select(
-                DB::raw("(created_at AT TIME ZONE 'UTC')::date as date"),
+                DB::raw("{$confirmationDateSql} as date"),
                 DB::raw('COALESCE(SUM(amount), 0) as amount')
             )
             ->where('status', 'confirmed')
-            ->where('created_at', '>=', $last30)
-            ->groupBy(DB::raw("(created_at AT TIME ZONE 'UTC')::date"))
+            ->where(function ($query) use ($last30) {
+                $query->where('confirmed_at', '>=', $last30)
+                    ->orWhere(function ($legacy) use ($last30) {
+                        $legacy->whereNull('confirmed_at')->where('created_at', '>=', $last30);
+                    });
+            })
+            ->groupBy(DB::raw($confirmationDateSql))
             ->orderBy('date')
             ->get();
 
         $signupsChart = DB::table('users')
             ->select(
-                DB::raw("(created_at AT TIME ZONE 'UTC')::date as date"),
+                DB::raw("{$signupDateSql} as date"),
                 DB::raw('COUNT(*) as count')
             )
             ->where('created_at', '>=', $last30)
-            ->groupBy(DB::raw("(created_at AT TIME ZONE 'UTC')::date"))
+            ->groupBy(DB::raw($signupDateSql))
             ->orderBy('date')
             ->get();
 
@@ -285,6 +357,18 @@ class DeveloperAnalyticsController extends Controller
                 'revenue_today' => $revenueToday,
                 'revenue_this_week' => $revenueWeek,
                 'revenue_this_month' => $revenueMonth,
+                'today' => [
+                    'date' => $todayStart->toDateString(),
+                    'timezone' => $timezone,
+                    'confirmed_count' => $confirmedTodayCount,
+                    'confirmed_amount' => $revenueToday,
+                    'attempted_count' => $todayAttemptCount,
+                    'attempted_amount' => $todayAttemptAmount,
+                    'pending_count' => (int) ($todayAttemptsByStatus->get('pending')?->cnt ?? 0),
+                    'pending_amount' => (float) ($todayAttemptsByStatus->get('pending')?->total ?? 0),
+                    'failed_count' => (int) ($todayAttemptsByStatus->get('failed')?->cnt ?? 0),
+                    'failed_amount' => (float) ($todayAttemptsByStatus->get('failed')?->total ?? 0),
+                ],
                 'by_plan' => $revenueByPlan,
                 'by_method' => $revenueByMethod,
                 'by_status' => $paymentsByStatus->map(fn ($r) => [
@@ -294,10 +378,30 @@ class DeveloperAnalyticsController extends Controller
                 'failures_by_category' => $failuresByCategory,
                 'unclassified_count' => (int) $unclassifiedRows->sum(fn ($row) => (int) $row->cnt),
                 'unclassified_amount' => (float) $unclassifiedRows->sum(fn ($row) => (float) $row->total),
-                'reconciliation_difference' => round($attemptedAmount - $accountedAmount, 2),
+                'reconciliation_difference' => round((float) ($ledgerTotals?->total ?? 0) - $accountedAmount, 2),
                 'confirmation_rate' => $attemptedCount > 0
                     ? round(((int) ($confirmedRow?->cnt ?? 0) / $attemptedCount) * 100, 2)
                     : 0.0,
+                'recent_payments' => $recentPayments,
+                'audit' => [
+                    'as_of' => $now->toIso8601String(),
+                    'timezone' => $timezone,
+                    'ledger_count' => (int) ($ledgerTotals?->cnt ?? 0),
+                    'ledger_amount' => (float) ($ledgerTotals?->total ?? 0),
+                    'status_count_total' => $accountedCount,
+                    'status_amount_total' => $accountedAmount,
+                    'status_count_difference' => (int) ($ledgerTotals?->cnt ?? 0) - $accountedCount,
+                    'status_amount_difference' => round((float) ($ledgerTotals?->total ?? 0) - $accountedAmount, 2),
+                    'confirmed_missing_timestamp_count' => (int) (clone $confirmedMissingTimestamp)->count(),
+                    'confirmed_missing_timestamp_amount' => (float) $confirmedMissingTimestamp->sum('amount'),
+                    'confirmed_missing_transaction_count' => (int) (clone $confirmedMissingTransaction)->count(),
+                    'confirmed_missing_transaction_amount' => (float) $confirmedMissingTransaction->sum('amount'),
+                    'preserved_without_subscription_count' => (int) (clone $orphanedSubscriptions)->count(),
+                    'preserved_without_subscription_amount' => (float) $orphanedSubscriptions->sum('amount'),
+                    'preserved_without_user_count' => (int) (clone $orphanedUsers)->count(),
+                    'preserved_without_user_amount' => (float) $orphanedUsers->sum('amount'),
+                    'ledger_preservation_started_at' => '2026-10-22',
+                ],
             ],
             'commission' => [
                 'enabled' => (bool) config('services.mobile_money.agent_commission.enabled', false),
