@@ -63,7 +63,8 @@ class PaymentFailureAlertTest extends TestCase
         Mail::assertSent(PaymentFailureAlertMail::class, function (PaymentFailureAlertMail $mail) {
             return $mail->bodyText === 'test almax email system.'
                 && $mail->hasTo('ahmedkasolexd@gmail.com')
-                && $mail->hasTo('prof.markdemo@gmail.com');
+                && $mail->hasTo('prof.markdemo@gmail.com')
+                && $mail->hasFrom('alerts@almaxpredictions.com', 'Almax Payment Alerts');
         });
     }
 
