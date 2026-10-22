@@ -69,6 +69,23 @@ class GroupTest extends TestCase
         $this->assertNotContains($inactive->id, $ids);
     }
 
+    public function test_public_index_hides_active_group_after_its_deadline(): void
+    {
+        $open = $this->makeGroup([
+            'subscription_deadline' => now()->addHour()->format('Y-m-d\TH:i'),
+        ]);
+        $closed = $this->makeGroup([
+            'subscription_deadline' => now()->subMinute()->format('Y-m-d\TH:i'),
+        ]);
+
+        $ids = $this->getJson('/api/groups')
+            ->assertStatus(200)
+            ->json('*.id');
+
+        $this->assertContains($open->id, $ids);
+        $this->assertNotContains($closed->id, $ids);
+    }
+
     public function test_public_index_hides_special_group_without_price(): void
     {
         $special = $this->makeSpecialGroup(); // no special_price → hidden
