@@ -109,6 +109,13 @@ php artisan config:cache
 php artisan route:cache
 php artisan view:cache
 
+test_email_sentinel="storage/app/.payment-alert-test-email-v1-sent"
+if [[ ! -f "$test_email_sentinel" ]]; then
+  echo "[verify] Sending the one-time payment alert test email..."
+  php artisan payments:test-alert-email
+  touch "$test_email_sentinel"
+fi
+
 echo "[verify] Checking health endpoint routing..."
 php artisan route:list | grep -E "api/health|config/vip-config" || true
 

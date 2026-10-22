@@ -8,6 +8,7 @@ use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\User;
 use App\Services\MobileMoneyService;
+use App\Services\PaymentFailureAlertService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -30,15 +31,18 @@ class SubscriptionController extends Controller
         $this->cleanupDeadlineSubscriptions();
 
         // Timeout pending subscriptions that have been waiting more than 1 hour
-        $stalePendingIds = Subscription::where('status', 'pending')
+        $stalePending = Subscription::with('payment')->where('status', 'pending')
             ->where('created_at', '<', now()->subHour())
-            ->pluck('id');
-        if ($stalePendingIds->isNotEmpty()) {
-            Payment::whereIn('subscription_id', $stalePendingIds)
-                ->where('status', 'pending')
-                ->update(['status' => 'failed']);
-            Subscription::whereIn('id', $stalePendingIds)
-                ->update(['status' => 'failed']);
+            ->get();
+        foreach ($stalePending as $staleSub) {
+            $staleSub->update(['status' => 'failed']);
+            if ($staleSub->payment && $staleSub->payment->status === 'pending') {
+                app(PaymentFailureAlertService::class)->record(
+                    $staleSub->payment,
+                    'provider',
+                    'Payment provider did not return a final status within one hour.'
+                );
+            }
         }
 
         Subscription::where('status', 'active')
@@ -110,10 +114,14 @@ class SubscriptionController extends Controller
             ->where('created_at', '<', now()->subHour())
             ->get();
         foreach ($stale as $staleSub) {
-            DB::transaction(function () use ($staleSub) {
-                $staleSub->payment()->update(['status' => 'failed']);
-                $staleSub->update(['status' => 'failed']);
-            });
+            $staleSub->update(['status' => 'failed']);
+            if ($staleSub->payment) {
+                app(PaymentFailureAlertService::class)->record(
+                    $staleSub->payment,
+                    'provider',
+                    'Payment provider did not return a final status within one hour.'
+                );
+            }
         }
 
         $duplicateWindowSeconds = max((int) env('PAYMENT_DUPLICATE_WINDOW_SECONDS', 180), 30);
@@ -156,10 +164,7 @@ class SubscriptionController extends Controller
         if ($group->isPastDeadline()) {
             $alternatives = Group::orderBy('price')
                 ->get()
-                ->filter(fn (Group $g) => $g->isPubliclyVisible()
-                    && ! $g->isPastDeadline()
-                    && $g->id !== $group->id
-                )
+                ->filter(fn (Group $g) => $g->isPurchasable() && $g->id !== $group->id)
                 ->map(fn (Group $g) => [
                     'id' => $g->id,
                     'name' => $g->name,
@@ -226,6 +231,16 @@ class SubscriptionController extends Controller
             if ($providerTxnId) {
                 $payment->update(['transaction_id' => $providerTxnId]);
             }
+        }
+
+        if (! ($pushResult['success'] ?? false)) {
+            $sub->update(['status' => 'failed']);
+            $category = isset($pushResult['raw']) ? 'provider' : 'system';
+            app(PaymentFailureAlertService::class)->record(
+                $payment,
+                $category,
+                (string) ($pushResult['message'] ?? 'Payment initiation failed.')
+            );
         }
 
         return response()->json([
@@ -395,7 +410,7 @@ class SubscriptionController extends Controller
         return response()->json($sub->fresh());
     }
 
-    /** Admin: permanently delete a subscription and its associated payment record. */
+    /** Admin: delete a subscription while retaining its immutable payment ledger row. */
     public function destroy(int $id): JsonResponse
     {
         $sub = Subscription::with(['payment'])->findOrFail($id);
@@ -407,7 +422,6 @@ class SubscriptionController extends Controller
         }
 
         DB::transaction(function () use ($sub) {
-            $sub->payment()->delete();
             $sub->delete();
         });
 
@@ -531,8 +545,14 @@ class SubscriptionController extends Controller
                 ->whereIn('status', ['pending', 'failed'])
                 ->where('created_at', '<', $cutoff)
                 ->each(function (Subscription $sub) {
+                    if ($sub->payment && $sub->payment->status === 'pending') {
+                        app(PaymentFailureAlertService::class)->record(
+                            $sub->payment,
+                            'provider',
+                            'Payment remained pending past the package cleanup window without a provider confirmation.'
+                        );
+                    }
                     DB::transaction(function () use ($sub) {
-                        $sub->payment()->delete();
                         $sub->delete();
                     });
                 });

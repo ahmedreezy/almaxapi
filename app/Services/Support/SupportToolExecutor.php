@@ -53,7 +53,7 @@ class SupportToolExecutor
     {
         $packages = Group::orderBy('price')
             ->get()
-            ->filter(fn (Group $group) => $group->isPubliclyVisible() && ! $group->isPastDeadline())
+            ->filter(fn (Group $group) => $group->isPurchasable())
             ->map(fn (Group $group) => [
                 'id' => $group->id,
                 'name' => $group->name,

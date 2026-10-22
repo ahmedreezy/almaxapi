@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Services\MobileMoneyService;
+use App\Services\PaymentFailureAlertService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -118,7 +119,9 @@ class PaymentController extends Controller
 
         if ($hasJpesaQuery) {
             $tid    = trim((string) $request->query('tid', ''));
-            $status = $this->normaliseJpesaStatus((string) $request->query('status', ''));
+            $rawStatus = (string) $request->query('status', '');
+            $reason = (string) $request->query('message', $request->query('reason', ''));
+            $status = $this->normaliseJpesaStatus($rawStatus);
 
             if ($tid === '' && $status === 'unknown') {
                 return response()->json([
@@ -132,7 +135,9 @@ class PaymentController extends Controller
                 reference: trim((string) $request->query('tx', $request->query('reference', ''))),
                 status: $status,
                 txnId: $tid !== '' ? $tid : null,
-                source: 'jpesa-query'
+                source: 'jpesa-query',
+                failureCategory: $this->failureCategory($rawStatus, $reason),
+                failureReason: $reason ?: "JPESA callback returned status: {$rawStatus}"
             );
         }
 
@@ -169,11 +174,23 @@ class PaymentController extends Controller
             reference: $parsed['reference'] ?? '',
             status: $this->normaliseJpesaStatus($parsed['status'] ?? ''),
             txnId: $parsed['transaction_id'] ?? null,
-            source: 'webhook'
+            source: 'webhook',
+            failureCategory: $this->failureCategory(
+                (string) ($parsed['raw_status'] ?? $parsed['status'] ?? ''),
+                (string) ($parsed['failure_reason'] ?? '')
+            ),
+            failureReason: (string) ($parsed['failure_reason'] ?? 'Payment provider reported a failed transaction.')
         );
     }
 
-    private function processWebhookOutcome(string $reference, string $status, ?string $txnId, string $source): JsonResponse
+    private function processWebhookOutcome(
+        string $reference,
+        string $status,
+        ?string $txnId,
+        string $source,
+        string $failureCategory = 'provider',
+        string $failureReason = 'Payment provider reported a failed transaction.'
+    ): JsonResponse
     {
         $reference = trim($reference);
         $txnId = $txnId !== null ? trim($txnId) : null;
@@ -240,7 +257,7 @@ class PaymentController extends Controller
         }
 
         if ($status === 'failed') {
-            $this->applyOutcome($sub, false, $txnId, $source);
+            $this->applyOutcome($sub, false, $txnId, $source, $failureCategory, $failureReason);
             return response()->json(['message' => 'Processed']);
         }
 
@@ -264,6 +281,18 @@ class PaymentController extends Controller
             'closed', 'close' => 'closed',
             default => 'unknown',
         };
+    }
+
+    private function failureCategory(string $status, string $reason): string
+    {
+        $text = strtolower(trim($status.' '.$reason));
+        foreach (['declin', 'reject', 'cancel', 'insufficient', 'wrong pin', 'invalid pin', 'user timeout'] as $customerSignal) {
+            if (str_contains($text, $customerSignal)) {
+                return 'customer';
+            }
+        }
+
+        return str_contains($text, 'error') ? 'system' : 'provider';
     }
 
     private function xmlPayloadToArray(string $rawBody): array
@@ -315,7 +344,14 @@ class PaymentController extends Controller
         }
 
         $isSuccess = $data['status'] === 'success';
-        $this->applyOutcome($sub, $isSuccess, $data['transactionId'] ?? null, 'manual-reconcile');
+        $this->applyOutcome(
+            $sub,
+            $isSuccess,
+            $data['transactionId'] ?? null,
+            'manual-reconcile',
+            'manual',
+            'Payment was marked failed manually by an administrator.'
+        );
 
         return response()->json([
             'message'      => 'Reconcile applied.',
@@ -323,7 +359,14 @@ class PaymentController extends Controller
         ]);
     }
 
-    private function applyOutcome(Subscription $sub, bool $isSuccess, ?string $txnId, string $source): void
+    private function applyOutcome(
+        Subscription $sub,
+        bool $isSuccess,
+        ?string $txnId,
+        string $source,
+        string $failureCategory = 'provider',
+        string $failureReason = 'Payment provider reported a failed transaction.'
+    ): void
     {
         if ($isSuccess) {
             $now       = now();
@@ -345,6 +388,9 @@ class PaymentController extends Controller
                     'status'            => 'confirmed',
                     'transaction_id'    => $txnId ?: $sub->payment->transaction_id,
                     'payment_reference' => $sub->payment_reference,
+                    'failure_category' => null,
+                    'failure_reason' => null,
+                    'failed_at' => null,
                 ]);
             }
 
@@ -375,10 +421,14 @@ class PaymentController extends Controller
 
         if ($sub->payment) {
             $sub->payment->update([
-                'status'            => 'failed',
                 'transaction_id'    => $txnId ?: $sub->payment->transaction_id,
                 'payment_reference' => $sub->payment_reference,
             ]);
+            app(PaymentFailureAlertService::class)->record(
+                $sub->payment,
+                $failureCategory,
+                $failureReason
+            );
         }
 
         Log::info('Payment outcome: subscription failed', [

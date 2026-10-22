@@ -3,6 +3,7 @@
 use App\Console\Commands\CleanupDeadlineSubscriptions;
 use App\Models\AdminUser;
 use App\Models\SupportMessage;
+use App\Services\PaymentFailureAlertService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
@@ -56,12 +57,28 @@ Artisan::command('admin:rotate-password {--username=admin : Admin username} {--p
     return self::SUCCESS;
 })->purpose('Create or rotate admin credentials for recovery');
 
+Artisan::command('payments:test-alert-email', function () {
+    try {
+        app(PaymentFailureAlertService::class)->sendTestEmail();
+        $this->info('Payment alert test email sent.');
+
+        return self::SUCCESS;
+    } catch (Throwable $e) {
+        $this->error('Payment alert test email failed: '.$e->getMessage());
+
+        return self::FAILURE;
+    }
+})->purpose('Send the Almax payment-alert test email to configured recipients');
+
 // ── Scheduler ────────────────────────────────────────────────────────────────
 // Run hourly: delete stale pending/failed subscriptions whose booking deadline
 // has passed (submissions within 2 h of deadline are kept for admin review).
 // Ensure crontab on production server contains:
 //   * * * * * cd /path/to/almaxapi && php artisan schedule:run >> /dev/null 2>&1
 Schedule::command(CleanupDeadlineSubscriptions::class)->hourly();
+Schedule::call(function () {
+    app(PaymentFailureAlertService::class)->sendPendingBatchIfReady();
+})->everyFiveMinutes()->name('send-payment-failure-alerts')->withoutOverlapping();
 Schedule::call(function () {
     SupportMessage::with('attachments')
         ->where('created_at', '<', now()->subDays(max(1, (int) config('support.retention_days', 365))))

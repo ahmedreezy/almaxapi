@@ -204,13 +204,14 @@ class MobileMoneyService
      */
     public function parseWebhookPayload(array $data): array
     {
-        $status = strtolower((string) (
+        $rawStatus = strtolower((string) (
             $data['status']
             ?? $data['payment_status']
             ?? $data['result']
             ?? $data['state']
             ?? 'unknown'
         ));
+        $status = $rawStatus;
 
         if (in_array($status, ['ok', 'success', 'successful', 'completed'], true)) {
             $status = 'success';
@@ -232,6 +233,8 @@ class MobileMoneyService
                 ?? $data['ref']
                 ?? '',
             'status'         => $status,
+            'raw_status'     => $rawStatus,
+            'failure_reason' => (string) ($data['message'] ?? $data['reason'] ?? $data['error'] ?? ''),
             'transaction_id' => $data['transaction_id']
                 ?? $data['txn_id']
                 ?? $data['txnid']

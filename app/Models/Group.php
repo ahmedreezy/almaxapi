@@ -109,8 +109,8 @@ class Group extends Model
     }
 
     /**
-     * Whether this group is visible/purchasable by end-users.
-     * Regular groups: must be active and accepting subscriptions.
+     * Whether this group is visible to end-users.
+     * Regular groups: must be active, even after their deadline.
      * Special groups: must also have a special_price set.
      */
     public function isPubliclyVisible(): bool
@@ -119,14 +119,16 @@ class Group extends Model
             return false;
         }
 
-        if ($this->isPastDeadline()) {
-            return false;
-        }
-
         if ($this->is_special) {
             return $this->special_price !== null;
         }
 
         return true;
+    }
+
+    /** Whether this group can accept a new subscription right now. */
+    public function isPurchasable(): bool
+    {
+        return $this->isPubliclyVisible() && ! $this->isPastDeadline();
     }
 }

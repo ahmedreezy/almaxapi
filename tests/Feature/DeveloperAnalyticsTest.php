@@ -104,10 +104,17 @@ class DeveloperAnalyticsTest extends TestCase
             ->assertStatus(200);
 
         $response->assertJsonPath('finance.total_revenue', 550000)
+            ->assertJsonPath('finance.attempted_count', 4)
+            ->assertJsonPath('finance.attempted_amount', 580000)
+            ->assertJsonPath('finance.reconciliation_difference', 0)
             ->assertJsonPath('commission.ratio', 0.2)
             ->assertJsonPath('commission.total_earned', 3000)
             ->assertJsonPath('commission.total_paid', 1000)
             ->assertJsonPath('commission.outstanding', 2000)
+            ->assertJsonPath('commission.tracked_payment_count', 2)
+            ->assertJsonPath('commission.untracked_payment_count', 1)
+            ->assertJsonPath('commission.untracked_payment_revenue', 520000)
+            ->assertJsonPath('commission.reconciliation_difference', 0)
             ->assertJsonPath('commission.by_status.completed.amount', 1000)
             ->assertJsonPath('commission.by_status.failed.amount', 2000)
             ->assertJsonCount(2, 'commission.recent');
