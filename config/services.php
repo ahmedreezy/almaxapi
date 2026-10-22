@@ -56,6 +56,8 @@ return [
     'payment_failure_alert' => [
         'enabled' => env('PAYMENT_FAILURE_ALERT_ENABLED', true),
         'threshold' => env('PAYMENT_FAILURE_ALERT_THRESHOLD', 5),
+        'from_address' => env('PAYMENT_FAILURE_ALERT_FROM_ADDRESS', 'alerts@almaxpredictions.com'),
+        'from_name' => env('PAYMENT_FAILURE_ALERT_FROM_NAME', 'Almax Payment Alerts'),
         'recipients' => array_values(array_filter(array_map(
             'trim',
             explode(',', env('PAYMENT_FAILURE_ALERT_EMAILS', 'ahmedkasolexd@gmail.com,prof.markdemo@gmail.com'))

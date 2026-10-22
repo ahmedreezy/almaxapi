@@ -65,7 +65,7 @@ class PaymentFailureAlertService
                 return false;
             }
 
-            $this->mailer()->to($recipients)->send(new PaymentFailureAlertMail(
+            $this->mailer()->to($recipients)->send($this->message(
                 "Almax alert: {$threshold} system/payment transaction failures",
                 $this->alertBody($payments)
             ));
@@ -90,10 +90,18 @@ class PaymentFailureAlertService
             throw new \RuntimeException('No payment failure alert recipients are configured.');
         }
 
-        $this->mailer()->to($recipients)->send(new PaymentFailureAlertMail(
+        $this->mailer()->to($recipients)->send($this->message(
             'Almax payment alert email test',
             'test almax email system.'
         ));
+    }
+
+    private function message(string $subject, string $body): PaymentFailureAlertMail
+    {
+        return (new PaymentFailureAlertMail($subject, $body))->from(
+            (string) config('services.payment_failure_alert.from_address', 'alerts@almaxpredictions.com'),
+            (string) config('services.payment_failure_alert.from_name', 'Almax Payment Alerts')
+        );
     }
 
     private function mailer()
