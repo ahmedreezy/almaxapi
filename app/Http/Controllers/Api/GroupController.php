@@ -20,8 +20,8 @@ class GroupController extends Controller
     use HandlesFileUploads;
     /**
      * Public: return only groups that end-users can purchase.
-     * Regular groups: is_active must be true.
-     * Special groups: is_active must be true AND special_price must be set.
+     * Regular groups: is_active must be true and the deadline must be open.
+     * Special groups: the same rules apply and special_price must be set.
      */
     public function index(): JsonResponse
     {
