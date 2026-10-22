@@ -306,6 +306,7 @@ class SubscriptionController extends Controller
             if ($sub->payment) {
                 $sub->payment->update([
                     'status' => 'confirmed',
+                    'confirmed_at' => $sub->payment->confirmed_at ?: $now,
                     'transaction_id' => $txnId,
                 ]);
             }
@@ -378,7 +379,10 @@ class SubscriptionController extends Controller
             ]);
 
             if ($sub->payment) {
-                $sub->payment->update(['status' => 'confirmed']);
+                $sub->payment->update([
+                    'status' => 'confirmed',
+                    'confirmed_at' => $sub->payment->confirmed_at ?: $now,
+                ]);
             }
 
             $this->processAgentCommissionSafely($sub->fresh(['payment']), 'admin-activation');
@@ -485,6 +489,7 @@ class SubscriptionController extends Controller
         if ($sub->payment) {
             $sub->payment->update([
                 'status' => 'confirmed',
+                'confirmed_at' => $sub->payment->confirmed_at ?: $now,
                 'transaction_id' => $txnId,
             ]);
         }

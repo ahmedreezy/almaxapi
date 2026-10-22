@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Subscription;
 use App\Models\Payment;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -85,6 +86,35 @@ class PaymentTest extends TestCase
         $this->withHeaders($ctx['headers'])
             ->getJson('/api/payments/99999')
             ->assertStatus(404);
+    }
+
+    public function test_payment_report_separates_attempt_date_from_confirmation_date(): void
+    {
+        Config::set('app.timezone', 'Africa/Kampala');
+        Carbon::setTestNow(Carbon::parse('2026-10-22 12:00:00', 'Africa/Kampala'));
+
+        try {
+            $ctx = $this->createAdmin();
+            $payment = $this->seedPayment();
+            $payment->forceFill([
+                'status' => 'confirmed',
+                'transaction_id' => 'TX-REPORT-TODAY',
+                'created_at' => now()->subDay(),
+                'confirmed_at' => now(),
+            ])->save();
+
+            $this->withHeaders($ctx['headers'])
+                ->getJson('/api/payments/report?from=2026-10-22&to=2026-10-22')
+                ->assertStatus(200)
+                ->assertJsonPath('summary.totalPayments', 0)
+                ->assertJsonPath('summary.totalAmount', 0)
+                ->assertJsonPath('summary.confirmedPayments', 1)
+                ->assertJsonPath('summary.confirmedAmount', 100)
+                ->assertJsonPath('period_semantics.attempts', 'created_at')
+                ->assertJsonPath('period_semantics.revenue', 'confirmed_at');
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_approved_webhook_sends_agent_commission_once(): void
