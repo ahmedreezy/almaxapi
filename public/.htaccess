@@ -30,3 +30,13 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# The SPA shell and its version manifest must always be revalidated together.
+# Fingerprinted JavaScript/CSS assets can remain cached safely.
+<IfModule mod_headers.c>
+    <FilesMatch "^(index\.html|version\.json)$">
+        Header always set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        Header always set Pragma "no-cache"
+        Header always set Expires "0"
+    </FilesMatch>
+</IfModule>
