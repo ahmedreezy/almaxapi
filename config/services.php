@@ -53,6 +53,15 @@ return [
         ],
     ],
 
+    'payment_failure_alert' => [
+        'enabled' => env('PAYMENT_FAILURE_ALERT_ENABLED', true),
+        'threshold' => env('PAYMENT_FAILURE_ALERT_THRESHOLD', 5),
+        'recipients' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', env('PAYMENT_FAILURE_ALERT_EMAILS', 'ahmedkasolexd@gmail.com,prof.markdemo@gmail.com'))
+        ))),
+    ],
+
     'twilio' => [
         'account_sid' => env('TWILIO_ACCOUNT_SID', ''),
         'auth_token' => env('TWILIO_AUTH_TOKEN', ''),

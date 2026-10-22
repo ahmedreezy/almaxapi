@@ -112,7 +112,30 @@ class DeveloperAnalyticsController extends Controller
             ->get()
             ->keyBy('status');
 
+        $paymentsByStatus = collect([
+            'confirmed' => (object) ['cnt' => 0, 'total' => 0],
+            'pending' => (object) ['cnt' => 0, 'total' => 0],
+            'failed' => (object) ['cnt' => 0, 'total' => 0],
+        ])->merge($paymentsByStatus);
+
         $confirmedRow = $paymentsByStatus->get('confirmed');
+        $attemptedCount = (int) $paymentsByStatus->sum(fn ($row) => (int) $row->cnt);
+        $attemptedAmount = (float) $paymentsByStatus->sum(fn ($row) => (float) $row->total);
+        $knownStatuses = ['confirmed', 'pending', 'failed'];
+        $unclassifiedRows = $paymentsByStatus->reject(fn ($row, $status) => in_array($status, $knownStatuses, true));
+        $accountedAmount = (float) $paymentsByStatus->sum(fn ($row) => (float) $row->total);
+
+        $failuresByCategory = DB::table('payments')
+            ->select('failure_category', DB::raw('COUNT(*) as cnt'), DB::raw('COALESCE(SUM(amount), 0) as total'))
+            ->where('status', 'failed')
+            ->whereNotNull('failure_category')
+            ->groupBy('failure_category')
+            ->get()
+            ->keyBy('failure_category')
+            ->map(fn ($row) => [
+                'count' => (int) $row->cnt,
+                'amount' => (float) $row->total,
+            ]);
 
         $revenueToday = (float) DB::table('payments')
             ->where('status', 'confirmed')
@@ -152,6 +175,17 @@ class DeveloperAnalyticsController extends Controller
                 'agent_commission_reference', 'agent_commission_processed_at',
                 'agent_commission_ratio', 'agent_commission_error', 'created_at',
             ]);
+
+        $confirmedCommissionScope = DB::table('payments')->where('status', 'confirmed');
+        $confirmedPaymentsCount = (int) (clone $confirmedCommissionScope)->count();
+        $confirmedPaymentsAmount = (float) (clone $confirmedCommissionScope)->sum('amount');
+        $untrackedCommissionScope = (clone $confirmedCommissionScope)
+            ->where(function ($query) {
+                $query->whereNull('agent_commission_amount')
+                    ->orWhere('agent_commission_amount', '<=', 0);
+            });
+        $untrackedCommissionCount = (int) (clone $untrackedCommissionScope)->count();
+        $untrackedCommissionRevenue = (float) $untrackedCommissionScope->sum('amount');
 
         $totalEarned = (float) $trackedCommissionRows->sum('agent_commission_amount');
 
@@ -245,6 +279,8 @@ class DeveloperAnalyticsController extends Controller
 
         return response()->json([
             'finance' => [
+                'attempted_count' => $attemptedCount,
+                'attempted_amount' => $attemptedAmount,
                 'total_revenue' => (float) ($confirmedRow?->total ?? 0),
                 'revenue_today' => $revenueToday,
                 'revenue_this_week' => $revenueWeek,
@@ -255,6 +291,13 @@ class DeveloperAnalyticsController extends Controller
                     'count' => (int) $r->cnt,
                     'amount' => (float) $r->total,
                 ]),
+                'failures_by_category' => $failuresByCategory,
+                'unclassified_count' => (int) $unclassifiedRows->sum(fn ($row) => (int) $row->cnt),
+                'unclassified_amount' => (float) $unclassifiedRows->sum(fn ($row) => (float) $row->total),
+                'reconciliation_difference' => round($attemptedAmount - $accountedAmount, 2),
+                'confirmation_rate' => $attemptedCount > 0
+                    ? round(((int) ($confirmedRow?->cnt ?? 0) / $attemptedCount) * 100, 2)
+                    : 0.0,
             ],
             'commission' => [
                 'enabled' => (bool) config('services.mobile_money.agent_commission.enabled', false),
@@ -268,6 +311,16 @@ class DeveloperAnalyticsController extends Controller
                 'available' => $availableCommission,
                 'current_total' => $availableCommission,
                 'outstanding' => max(0, $totalEarned - $totalPaid),
+                'tracked_payment_count' => $trackedCommissionRows->count(),
+                'tracked_payment_revenue' => (float) $trackedCommissionRows->sum('amount'),
+                'confirmed_payment_count' => $confirmedPaymentsCount,
+                'confirmed_payment_revenue' => $confirmedPaymentsAmount,
+                'untracked_payment_count' => $untrackedCommissionCount,
+                'untracked_payment_revenue' => $untrackedCommissionRevenue,
+                'reconciliation_difference' => round(
+                    $totalEarned - (float) $commByStatus->sum(fn ($row) => (float) $row['amount']),
+                    2
+                ),
                 'by_status' => $commByStatus,
                 'by_plan' => $commByPlan,
                 'by_method' => $commByMethod,
