@@ -72,7 +72,7 @@ class SubscriptionTest extends TestCase
 
     // ─── Create subscription (PUBLIC route) ──────────────────────────────
 
-    public function test_user_can_create_subscription(): void
+    public function test_unavailable_payment_provider_records_a_system_failure(): void
     {
         $ctx   = $this->createUser('0711000001');
         $group = $this->makeGroup(['odds_type' => '2', 'plan_type' => 'daily', 'price' => 10000]);
@@ -83,7 +83,9 @@ class SubscriptionTest extends TestCase
         $response->assertStatus(201)
             ->assertJsonPath('subscription.user_id', $ctx['user']->id)
             ->assertJsonPath('subscription.group_id', $group->id)
-            ->assertJsonPath('subscription.status',   'pending');
+            ->assertJsonPath('subscription.status', 'failed')
+            ->assertJsonPath('subscription.payment.status', 'failed')
+            ->assertJsonPath('subscription.payment.failure_category', 'system');
 
         $this->assertEquals(10000, $response->json('subscription.amount'));
         $this->assertDatabaseHas('subscriptions', [
