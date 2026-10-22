@@ -48,7 +48,7 @@ class DeveloperAnalyticsTest extends TestCase
                 'status' => 'active',
             ]);
 
-            Payment::create([
+            $confirmed = Payment::create([
                 'subscription_id' => $sub->id,
                 'user_id' => $user->id,
                 'amount' => 1000,
@@ -57,9 +57,9 @@ class DeveloperAnalyticsTest extends TestCase
                 'phone' => $user->phone,
                 'status' => 'confirmed',
                 'transaction_id' => 'TX-CONFIRMED-TODAY',
-                'created_at' => now()->subDay(),
                 'confirmed_at' => now(),
             ]);
+            $confirmed->forceFill(['created_at' => now()->subDay()])->save();
             Payment::create([
                 'subscription_id' => $sub->id,
                 'user_id' => $user->id,
