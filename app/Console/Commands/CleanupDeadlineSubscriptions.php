@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Group;
 use App\Models\Subscription;
+use App\Services\PaymentFailureAlertService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -48,8 +49,14 @@ class CleanupDeadlineSubscriptions extends Command
                 ->get();
 
             foreach ($subs as $sub) {
+                if ($sub->payment && $sub->payment->status === 'pending') {
+                    app(PaymentFailureAlertService::class)->record(
+                        $sub->payment,
+                        'provider',
+                        'Payment remained pending past the package cleanup window without a provider confirmation.'
+                    );
+                }
                 DB::transaction(function () use ($sub) {
-                    $sub->payment()->delete();
                     $sub->delete();
                 });
                 $deleted++;

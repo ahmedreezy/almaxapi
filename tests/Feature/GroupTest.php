@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Group;
+use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
@@ -69,6 +70,27 @@ class GroupTest extends TestCase
         $this->assertNotContains($inactive->id, $ids);
     }
 
+    public function test_public_index_keeps_active_group_visible_after_its_deadline(): void
+    {
+        $open = $this->makeGroup([
+            'subscription_deadline' => now()->addHour()->format('Y-m-d\TH:i'),
+        ]);
+        $closed = $this->makeGroup([
+            'subscription_deadline' => now()->subMinute()->format('Y-m-d\TH:i'),
+        ]);
+
+        $ids = $this->getJson('/api/groups')
+            ->assertStatus(200)
+            ->json('*.id');
+
+        $this->assertContains($open->id, $ids);
+        $this->assertContains($closed->id, $ids);
+
+        $closedPayload = collect($this->getJson('/api/groups')->json())->firstWhere('id', $closed->id);
+        $this->assertTrue($closedPayload['isClosed']);
+        $this->assertFalse($closed->isPurchasable());
+    }
+
     public function test_public_index_hides_special_group_without_price(): void
     {
         $special = $this->makeSpecialGroup(); // no special_price → hidden
@@ -105,9 +127,26 @@ class GroupTest extends TestCase
         $this->getJson('/api/groups')
             ->assertStatus(200)
             ->assertJsonStructure([['id', 'name', 'oddsType', 'planType', 'price',
-                'betslipLink', 'betslipCode', 'isSpecial', 'isActive',
+                'isSpecial', 'isActive',
                 'specialPrice', 'specialOdds', 'effectivePrice',
                 'subscriptionDeadline', 'isClosed']]);
+    }
+
+    public function test_public_index_does_not_expose_paid_package_content(): void
+    {
+        $this->makeGroup([
+            'betslip_link' => 'https://private.example/slip',
+            'betslip_code' => 'PRIVATE-CODE',
+            'photo_url' => '/storage/groups/private.webp',
+        ]);
+
+        $group = $this->getJson('/api/groups')
+            ->assertStatus(200)
+            ->json('0');
+
+        $this->assertArrayNotHasKey('betslipLink', $group);
+        $this->assertArrayNotHasKey('betslipCode', $group);
+        $this->assertArrayNotHasKey('photoUrl', $group);
     }
 
     public function test_all_five_required_packages_are_present_after_migration(): void
@@ -378,7 +417,7 @@ class GroupTest extends TestCase
         $this->assertDatabaseHas('groups', ['id' => $group->id, 'is_active' => false]);
     }
 
-    public function test_admin_cannot_activate_package_with_past_deadline(): void
+    public function test_admin_can_activate_closed_package_so_it_remains_publicly_visible(): void
     {
         $admin = $this->createAdmin();
         $group = $this->makeGroup([
@@ -388,10 +427,14 @@ class GroupTest extends TestCase
 
         $this->withHeaders($admin['headers'])
             ->patchJson("/api/groups/{$group->id}", ['is_active' => true])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('subscription_deadline');
+            ->assertStatus(200)
+            ->assertJsonPath('isActive', true)
+            ->assertJsonPath('isClosed', true);
 
-        $this->assertDatabaseHas('groups', ['id' => $group->id, 'is_active' => false]);
+        $this->assertDatabaseHas('groups', ['id' => $group->id, 'is_active' => true]);
+        $this->getJson('/api/groups')
+            ->assertStatus(200)
+            ->assertJsonFragment(['id' => $group->id, 'isActive' => true, 'isClosed' => true]);
     }
 
     public function test_admin_can_update_betslip(): void
@@ -461,6 +504,15 @@ class GroupTest extends TestCase
             'amount'         => $group->price,
             'status'         => 'pending',
         ]);
+        $payment = Payment::create([
+            'subscription_id' => $subscription->id,
+            'user_id' => $user->id,
+            'amount' => $group->price,
+            'plan_type' => $group->plan_type,
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'status' => 'failed',
+        ]);
 
         $this->withHeaders($admin['headers'])
             ->deleteJson("/api/groups/{$group->id}")
@@ -469,6 +521,7 @@ class GroupTest extends TestCase
 
         $this->assertDatabaseMissing('groups', ['id' => $group->id]);
         $this->assertDatabaseMissing('subscriptions', ['id' => $subscription->id]);
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'subscription_id' => null]);
     }
 
     public function test_unauthenticated_cannot_delete_group(): void

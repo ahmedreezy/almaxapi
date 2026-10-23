@@ -15,6 +15,8 @@ class Payment extends Model
         'subscription_id', 'user_id', 'amount',
         'plan_type', 'payment_method', 'phone', 'status',
         'payment_reference', 'transaction_id',
+        'confirmed_at',
+        'failure_category', 'failure_reason', 'failed_at', 'failure_alerted_at',
         'agent_commission_amount', 'agent_commission_ratio',
         'agent_commission_status', 'agent_commission_reference',
         'agent_commission_transaction_id', 'agent_commission_recipient',
@@ -28,6 +30,9 @@ class Payment extends Model
         'agent_commission_ratio'        => 'float',
         'agent_commission_processed_at' => 'datetime',
         'created_at'                    => 'datetime',
+        'confirmed_at'                  => 'datetime',
+        'failed_at'                     => 'datetime',
+        'failure_alerted_at'             => 'datetime',
     ];
 
     public function subscription(): BelongsTo

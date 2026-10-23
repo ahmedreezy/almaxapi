@@ -72,7 +72,7 @@ class SubscriptionTest extends TestCase
 
     // ─── Create subscription (PUBLIC route) ──────────────────────────────
 
-    public function test_user_can_create_subscription(): void
+    public function test_unavailable_payment_provider_records_a_system_failure(): void
     {
         $ctx   = $this->createUser('0711000001');
         $group = $this->makeGroup(['odds_type' => '2', 'plan_type' => 'daily', 'price' => 10000]);
@@ -83,7 +83,9 @@ class SubscriptionTest extends TestCase
         $response->assertStatus(201)
             ->assertJsonPath('subscription.user_id', $ctx['user']->id)
             ->assertJsonPath('subscription.group_id', $group->id)
-            ->assertJsonPath('subscription.status',   'pending');
+            ->assertJsonPath('subscription.status', 'failed')
+            ->assertJsonPath('subscription.payment.status', 'failed')
+            ->assertJsonPath('subscription.payment.failure_category', 'system');
 
         $this->assertEquals(10000, $response->json('subscription.amount'));
         $this->assertDatabaseHas('subscriptions', [
@@ -248,7 +250,11 @@ class SubscriptionTest extends TestCase
     public function test_pending_subscription_has_masked_betslip(): void
     {
         $ctx = $this->createUser('0712000002');
+        $group = $this->makeGroup([
+            'photo_url' => '/storage/groups/private.webp',
+        ]);
         $this->seedSubscription($ctx['user'], [
+            'group_id'     => $group->id,
             'status'       => 'pending',
             'betslip_link' => 'https://secret.link',
             'betslip_code' => 'SECRET-CODE',
@@ -261,6 +267,7 @@ class SubscriptionTest extends TestCase
         $sub = $response->json('0');
         $this->assertSame('', $sub['betslipLink']);
         $this->assertSame('', $sub['betslipCode']);
+        $this->assertSame('', $sub['packagePhoto']);
     }
 
     // ─── Admin: list & update ─────────────────────────────────────────────

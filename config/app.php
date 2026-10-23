@@ -54,6 +54,13 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    'release' => env(
+        'APP_RELEASE',
+        is_file(storage_path('app/release'))
+            ? trim((string) file_get_contents(storage_path('app/release')))
+            : 'unknown'
+    ),
+
     /*
     |--------------------------------------------------------------------------
     | Application Timezone

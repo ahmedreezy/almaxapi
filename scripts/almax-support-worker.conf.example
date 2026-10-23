@@ -1,0 +1,13 @@
+[program:almax-support-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=/usr/local/bin/php /absolute/path/to/almaxapi/artisan queue:work database --queue=support --sleep=1 --tries=1 --timeout=60 --max-time=3600
+directory=/absolute/path/to/almaxapi
+autostart=true
+autorestart=true
+stopasgroup=true
+killasgroup=true
+numprocs=1
+redirect_stderr=true
+stdout_logfile=/absolute/path/to/almaxapi/storage/logs/support-worker.log
+stopwaitsecs=70
+

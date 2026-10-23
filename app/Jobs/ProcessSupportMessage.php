@@ -4,11 +4,14 @@ namespace App\Jobs;
 
 use App\Models\SupportConversation;
 use App\Models\SupportMessage;
+use App\Services\Support\OpenAiMediaService;
 use App\Services\Support\OpenAiSupportService;
+use App\Services\Support\SupportFastReplyService;
 use App\Services\Support\SupportQuotaService;
 use App\Services\Support\TwilioWhatsAppService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -16,113 +19,197 @@ class ProcessSupportMessage implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 3;
+    public int $tries;
 
-    public int $timeout = 90;
+    public int $timeout;
+
+    public bool $failOnTimeout = true;
 
     public function __construct(public readonly int $messageId)
     {
+        $this->tries = max(1, (int) config('support.job_tries', 1));
+        $this->timeout = max(30, (int) config('support.job_timeout', 60));
         $this->onQueue('support');
     }
 
     public function handle(
         OpenAiSupportService $agent,
+        OpenAiMediaService $media,
+        SupportFastReplyService $fastReplies,
         SupportQuotaService $quota,
         TwilioWhatsAppService $twilio,
     ): void {
-        $incoming = SupportMessage::with('conversation.contact')->find($this->messageId);
+        $incoming = SupportMessage::with(['conversation.contact', 'attachments'])->find($this->messageId);
         if (! $incoming || $incoming->direction !== 'inbound') {
+            return;
+        }
+
+        if ($incoming->conversation->messages()
+            ->where('direction', 'outbound')
+            ->where('metadata->in_reply_to', $incoming->id)
+            ->exists()) {
             return;
         }
 
         $conversation = $incoming->conversation;
         $contact = $conversation->contact;
-        if (! $contact || $contact->blocked || $conversation->mode !== 'ai' || $conversation->status === 'resolved') {
+        if (! $contact || $contact->blocked || $conversation->status === 'resolved') {
             return;
         }
 
-        if ((int) data_get($incoming->metadata, 'num_media', 0) > 0 && trim($incoming->body) === '') {
+        if ($conversation->mode === 'human') {
+            return;
+        }
+
+        $jobStartedAt = now();
+        $jobStartedNs = hrtime(true);
+        $receivedAt = $incoming->sent_at ?? $incoming->created_at;
+        $queueWaitMs = $receivedAt ? (int) max(0, $receivedAt->diffInMilliseconds($jobStartedAt)) : null;
+
+        Log::info('Support message processing started', [
+            'message_id' => $incoming->id,
+            'conversation_id' => $conversation->id,
+            'channel' => $contact->channel,
+            'queue_wait_ms' => $queueWaitMs,
+        ]);
+
+        if ($contact->channel !== 'platform' && (int) data_get($incoming->metadata, 'num_media', 0) > 0 && trim($incoming->body) === '') {
             $this->sendOperationalMessage($conversation, $twilio, (string) config('support.text_only_message'));
 
             return;
         }
 
         if (! $quota->reserve($contact)) {
-            if ($quota->claimLimitNotice($contact)) {
-                $this->sendOperationalMessage($conversation, $twilio, (string) config('support.limit_message'));
-            }
+            // Every inbound message needs an outbound terminal record. Sending
+            // this notice only once leaves later messages permanently pending.
+            $quota->claimLimitNotice($contact);
+            $this->sendOperationalMessage($conversation, $twilio, (string) config('support.limit_message'));
 
             return;
         }
 
         $usage = ['input_tokens' => 0, 'output_tokens' => 0];
         try {
-            $result = $agent->respond($conversation, $incoming);
+            $audio = $incoming->attachments->firstWhere('kind', 'audio');
+            if ($audio) {
+                $transcript = $media->transcribe($audio);
+                $incoming->body = trim(implode("\n\n", array_filter([
+                    trim($incoming->body),
+                    'Voice note transcript: '.$transcript,
+                ])));
+                $incoming->save();
+            } elseif (trim($incoming->body) === '' && $incoming->attachments->where('kind', 'image')->isNotEmpty()) {
+                $incoming->body = 'Please interpret the attached image or screenshot and help with what it shows.';
+                $incoming->save();
+            }
+
+            $result = $fastReplies->respond($conversation, $incoming)
+                ?? $agent->respond($conversation, $incoming);
             $usage = $result;
 
             $conversation->refresh();
-            if ($conversation->mode === 'human' || $conversation->status === 'resolved') {
+            if ($conversation->status === 'resolved' || $conversation->mode === 'human') {
                 $quota->release($contact, $result['input_tokens'], $result['output_tokens']);
 
                 return;
             }
 
-            $requiresHuman = (bool) $result['requires_human']
-                || $result['action'] === 'request_human'
-                || $conversation->mode === 'waiting_human';
-            $conversation->update([
+            $conversationChanges = [
                 'category' => $result['category'],
                 'sentiment' => $result['sentiment'],
                 'priority' => $result['priority'],
                 'summary' => mb_substr($result['summary'], 0, 2000),
-                'mode' => $requiresHuman ? 'waiting_human' : $conversation->mode,
-                'status' => $requiresHuman ? 'waiting_human' : 'open',
-                'human_requested_at' => $requiresHuman ? ($conversation->human_requested_at ?? now()) : $conversation->human_requested_at,
+                'mode' => 'ai',
+                'status' => 'open',
+                'assigned_admin_id' => null,
+                'human_requested_at' => null,
                 'resolved_at' => $result['resolved'] ? now() : null,
-            ]);
-
+            ];
             if ($result['resolved']) {
-                $conversation->update(['status' => 'resolved']);
+                $conversationChanges['status'] = 'resolved';
             }
 
             $reply = trim($result['reply']);
-            $isFirstReply = ! $conversation->messages()->where('direction', 'outbound')->exists();
-            $greeting = (string) config('support.greeting');
-            if ($isFirstReply && ! str_starts_with($reply, $greeting)) {
-                $reply = $greeting."\n\n".$reply;
-            }
+            $processingMs = (int) round((hrtime(true) - $jobStartedNs) / 1_000_000);
+            $totalResponseMs = $receivedAt
+                ? (int) max(0, $receivedAt->diffInMilliseconds(now()))
+                : $processingMs;
+            $performance = array_merge([
+                'queue_wait_ms' => $queueWaitMs,
+                'processing_ms' => $processingMs,
+                'total_response_ms' => $totalResponseMs,
+            ], (array) ($result['performance'] ?? []));
 
-            $sent = $twilio->sendText($contact->phone ?: $contact->external_id, $reply);
-            SupportMessage::create([
+            $messageData = [
                 'conversation_id' => $conversation->id,
                 'direction' => 'outbound',
                 'sender_type' => 'ai',
                 'body' => $reply,
-                'provider_message_id' => $sent['sid'] ?: null,
-                'delivery_status' => $sent['status'],
-                'metadata' => ['action' => $result['action']],
+                'metadata' => [
+                    'action' => $result['action'],
+                    'in_reply_to' => $incoming->id,
+                    'performance' => $performance,
+                ],
                 'input_tokens' => $result['input_tokens'],
                 'output_tokens' => $result['output_tokens'],
                 'model' => $result['model'],
                 'sent_at' => now(),
-            ]);
-            $conversation->update(['last_message_at' => now()]);
+            ];
+
+            if ($contact->channel === 'platform') {
+                $stored = DB::transaction(function () use ($conversation, $conversationChanges, $messageData) {
+                    $locked = SupportConversation::lockForUpdate()->findOrFail($conversation->id);
+                    if ($locked->mode === 'human' || $locked->status === 'resolved') {
+                        return false;
+                    }
+                    $locked->update(array_merge($conversationChanges, ['last_message_at' => now()]));
+                    SupportMessage::create(array_merge($messageData, [
+                        'provider_message_id' => null,
+                        'delivery_status' => 'delivered',
+                    ]));
+
+                    return true;
+                });
+                if (! $stored) {
+                    $quota->release($contact, $result['input_tokens'], $result['output_tokens']);
+
+                    return;
+                }
+            } else {
+                $conversation->update($conversationChanges);
+                $sent = $this->deliver($conversation, $twilio, $reply);
+                SupportMessage::create(array_merge($messageData, [
+                    'provider_message_id' => $sent['sid'] ?: null,
+                    'delivery_status' => $sent['status'],
+                ]));
+                $conversation->update(['last_message_at' => now()]);
+            }
             $quota->consume($contact, $result['input_tokens'], $result['output_tokens']);
+
+            Log::info('Support message processing completed', [
+                'message_id' => $incoming->id,
+                'conversation_id' => $conversation->id,
+                'model' => $result['model'],
+                ...$performance,
+            ]);
         } catch (Throwable $e) {
             $quota->release($contact, (int) ($usage['input_tokens'] ?? 0), (int) ($usage['output_tokens'] ?? 0));
-            $conversation->update([
-                'mode' => 'waiting_human',
-                'status' => 'waiting_human',
-                'priority' => 'high',
-                'human_requested_at' => $conversation->human_requested_at ?? now(),
-            ]);
+            $conversation->refresh();
+            if ($conversation->mode !== 'human') {
+                $conversation->update(['mode' => 'ai', 'status' => 'open', 'priority' => 'high']);
+            }
             Log::error('Support message processing failed', [
                 'message_id' => $incoming->id,
                 'conversation_id' => $conversation->id,
+                'queue_wait_ms' => $queueWaitMs,
+                'processing_ms' => (int) round((hrtime(true) - $jobStartedNs) / 1_000_000),
                 'error' => $e->getMessage(),
             ]);
 
             try {
+                if ($conversation->mode === 'human') {
+                    return;
+                }
                 $this->sendOperationalMessage($conversation, $twilio, (string) config('support.fallback_message'));
             } catch (Throwable $sendError) {
                 Log::error('Support fallback send failed', ['error' => $sendError->getMessage()]);
@@ -131,19 +218,61 @@ class ProcessSupportMessage implements ShouldQueue
         }
     }
 
+    public function failed(?Throwable $exception): void
+    {
+        $incoming = SupportMessage::with('conversation.contact')->find($this->messageId);
+        if (! $incoming || $incoming->direction !== 'inbound') {
+            return;
+        }
+
+        $conversation = $incoming->conversation;
+        if (! $conversation || ! $conversation->contact) {
+            return;
+        }
+
+        if ($conversation->messages()
+            ->where('direction', 'outbound')
+            ->where('metadata->in_reply_to', $incoming->id)
+            ->exists()) {
+            return;
+        }
+
+        $conversation->refresh();
+        if ($conversation->mode === 'human') {
+            return;
+        }
+        $conversation->update(['mode' => 'ai', 'status' => 'open', 'priority' => 'high', 'resolved_at' => null]);
+
+        try {
+            app(SupportQuotaService::class)->release($conversation->contact);
+        } catch (Throwable $releaseError) {
+            Log::warning('Support failed-job quota release skipped', [
+                'message_id' => $incoming->id,
+                'error' => $releaseError->getMessage(),
+            ]);
+        }
+
+        try {
+            $this->sendOperationalMessage(
+                $conversation,
+                app(TwilioWhatsAppService::class),
+                (string) config('support.fallback_message')
+            );
+        } catch (Throwable $sendError) {
+            Log::error('Support failed-job fallback send failed', [
+                'message_id' => $incoming->id,
+                'original_error' => $exception?->getMessage(),
+                'send_error' => $sendError->getMessage(),
+            ]);
+        }
+    }
+
     private function sendOperationalMessage(
         SupportConversation $conversation,
         TwilioWhatsAppService $twilio,
         string $body
     ): void {
-        $contact = $conversation->contact;
-        $greeting = (string) config('support.greeting');
-        if (! $conversation->messages()->where('direction', 'outbound')->exists()
-            && ! str_starts_with($body, $greeting)) {
-            $body = $greeting."\n\n".$body;
-        }
-
-        $sent = $twilio->sendText($contact->phone ?: $contact->external_id, $body);
+        $sent = $this->deliver($conversation, $twilio, $body);
         SupportMessage::create([
             'conversation_id' => $conversation->id,
             'direction' => 'outbound',
@@ -151,8 +280,25 @@ class ProcessSupportMessage implements ShouldQueue
             'body' => $body,
             'provider_message_id' => $sent['sid'] ?: null,
             'delivery_status' => $sent['status'],
+            'metadata' => ['in_reply_to' => $conversation->messages()->where('direction', 'inbound')->latest('id')->value('id')],
             'sent_at' => now(),
         ]);
         $conversation->update(['last_message_at' => now()]);
+    }
+
+    /** @return array{sid:string,status:string} */
+    private function deliver(
+        SupportConversation $conversation,
+        TwilioWhatsAppService $twilio,
+        string $body
+    ): array {
+        if ($conversation->contact->channel === 'platform') {
+            return ['sid' => '', 'status' => 'delivered'];
+        }
+
+        return $twilio->sendText(
+            $conversation->contact->phone ?: $conversation->contact->external_id,
+            $body
+        );
     }
 }

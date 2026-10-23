@@ -19,16 +19,16 @@ class GroupController extends Controller
 {
     use HandlesFileUploads;
     /**
-     * Public: return only groups that end-users can purchase.
-     * Regular groups: is_active must be true.
-     * Special groups: is_active must be true AND special_price must be set.
+     * Public: return groups that end-users should see.
+     * Active groups remain visible after their deadline and are marked isClosed.
+     * Special groups must also have a special_price set.
      */
     public function index(): JsonResponse
     {
         $groups = Group::orderBy('price')
             ->get()
             ->filter(fn (Group $g) => $g->isPubliclyVisible())
-            ->map(fn (Group $g) => $this->formatGroup($g))
+            ->map(fn (Group $g) => $this->formatGroup($g, false))
             ->values();
 
         return response()->json($groups);
@@ -114,23 +114,6 @@ class GroupController extends Controller
 
         $group = Group::findOrFail($id);
 
-        $candidateDeadline = $request->has('subscription_deadline')
-            ? ($request->input('subscription_deadline') ?: null)
-            : $group->subscription_deadline;
-        $finalIsActive = $request->has('is_active')
-            ? $request->boolean('is_active')
-            : (bool) $group->is_active;
-        $isActivationAttempt = $request->has('is_active') && $request->boolean('is_active') === true;
-        $isDeadlineUpdateWhileActive = $request->has('subscription_deadline') && $finalIsActive;
-
-        if (($isActivationAttempt || $isDeadlineUpdateWhileActive)
-            && Group::isDeadlinePastOrCurrent($candidateDeadline)
-        ) {
-            throw ValidationException::withMessages([
-                'subscription_deadline' => ['The deadline must be a future date and time before activating this package.'],
-            ]);
-        }
-
         if ($request->hasFile('photo')) {
             $this->deleteUpload($group->photo_url);
             $data['photo_url'] = $this->storeUpload($request->file('photo'), 'groups');
@@ -181,17 +164,15 @@ class GroupController extends Controller
 
     /**
      * Admin: permanently delete a package.
-     * Related subscriptions and payments are cascade-deleted with the package.
+     * Related subscriptions are removed; immutable payment ledger rows are retained.
      */
     public function destroy(int $id): JsonResponse
     {
         $group = Group::findOrFail($id);
 
-        // Cascade-delete all subscriptions and payments regardless of status,
-        // then remove the package photo and the group itself.
+        // Remove subscriptions but preserve payment ledger rows for finance reporting.
         \Illuminate\Support\Facades\DB::transaction(function () use ($group) {
             $group->subscriptions()->each(function ($sub) {
-                $sub->payment()->delete();
                 $sub->delete();
             });
             if ($group->photo_url) {
@@ -224,24 +205,29 @@ class GroupController extends Controller
         ];
     }
 
-    private function formatGroup(Group $group): array
+    private function formatGroup(Group $group, bool $includePrivate = true): array
     {
-        return [
+        $payload = [
             'id'                   => $group->id,
             'name'                 => $group->name,
             'oddsType'             => $group->odds_type,
             'planType'             => $group->plan_type,
             'price'                => $group->price,
-            'betslipLink'          => $group->betslip_link ?? '',
-            'betslipCode'          => $group->betslip_code ?? '',
             'isSpecial'            => (bool) $group->is_special,
             'isActive'             => (bool) $group->is_active,
             'specialPrice'         => $group->special_price,
             'specialOdds'          => $group->special_odds,
             'effectivePrice'       => $group->effectivePrice(),
-            'photoUrl'             => $group->photo_url ?? '',
             'subscriptionDeadline' => $group->subscription_deadline ?: null,
             'isClosed'             => $group->isPastDeadline(),
         ];
+
+        if ($includePrivate) {
+            $payload['betslipLink'] = $group->betslip_link ?? '';
+            $payload['betslipCode'] = $group->betslip_code ?? '';
+            $payload['photoUrl'] = $group->photo_url ?? '';
+        }
+
+        return $payload;
     }
 }

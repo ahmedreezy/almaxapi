@@ -36,21 +36,32 @@ return [
     ],
 
     'mobile_money' => [
-        'api_url'       => env('MOBILE_MONEY_API_URL', env('JPESA_API_URL', '')),
-        'api_key'       => env('MOBILE_MONEY_API_KEY', env('JPESA_API_KEY', '')),
-        'api_secret'    => env('MOBILE_MONEY_API_SECRET', ''),
-        'webhook_secret'=> env('MOBILE_MONEY_WEBHOOK_SECRET', ''),
-        'callback_url'  => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
+        'api_url' => env('MOBILE_MONEY_API_URL', env('JPESA_API_URL', '')),
+        'api_key' => env('MOBILE_MONEY_API_KEY', env('JPESA_API_KEY', '')),
+        'api_secret' => env('MOBILE_MONEY_API_SECRET', ''),
+        'webhook_secret' => env('MOBILE_MONEY_WEBHOOK_SECRET', ''),
+        'callback_url' => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
         'agent_commission' => [
-            'enabled'          => env('JPESA_AGENT_COMMISSION_ENABLED', false),
-            'ratio'            => env('JPESA_AGENT_COMMISSION_RATIO', 0.2),
-            'recipient_type'   => env('JPESA_AGENT_COMMISSION_RECIPIENT_TYPE', 'business'),
-            'recipient_email'  => env('JPESA_AGENT_COMMISSION_RECIPIENT_EMAIL', ''),
+            'enabled' => env('JPESA_AGENT_COMMISSION_ENABLED', false),
+            'ratio' => env('JPESA_AGENT_COMMISSION_RATIO', 0.2),
+            'recipient_type' => env('JPESA_AGENT_COMMISSION_RECIPIENT_TYPE', 'business'),
+            'recipient_email' => env('JPESA_AGENT_COMMISSION_RECIPIENT_EMAIL', ''),
             'recipient_mobile' => env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', ''),
-            'transfer_action'  => env('JPESA_AGENT_COMMISSION_TRANSFER_ACTION', 'debit'),
-            'transfer_pt'      => env('JPESA_AGENT_COMMISSION_TRANSFER_PT', 'gwallet'),
-            'currency'         => env('JPESA_AGENT_COMMISSION_CURRENCY', 'UGX'),
+            'transfer_action' => env('JPESA_AGENT_COMMISSION_TRANSFER_ACTION', 'debit'),
+            'transfer_pt' => env('JPESA_AGENT_COMMISSION_TRANSFER_PT', 'gwallet'),
+            'currency' => env('JPESA_AGENT_COMMISSION_CURRENCY', 'UGX'),
         ],
+    ],
+
+    'payment_failure_alert' => [
+        'enabled' => env('PAYMENT_FAILURE_ALERT_ENABLED', true),
+        'threshold' => env('PAYMENT_FAILURE_ALERT_THRESHOLD', 5),
+        'from_address' => env('PAYMENT_FAILURE_ALERT_FROM_ADDRESS', 'alerts@almaxpredictions.com'),
+        'from_name' => env('PAYMENT_FAILURE_ALERT_FROM_NAME', 'Almax Payment Alerts'),
+        'recipients' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', env('PAYMENT_FAILURE_ALERT_EMAILS', 'ahmedkasolexd@gmail.com,prof.markdemo@gmail.com'))
+        ))),
     ],
 
     'twilio' => [
@@ -64,8 +75,16 @@ return [
     'openai' => [
         'api_key' => env('OPENAI_API_KEY', ''),
         'model' => env('OPENAI_MODEL', 'gpt-5.4-mini'),
+        'transcription_model' => env('OPENAI_TRANSCRIPTION_MODEL', 'gpt-transcribe'),
         'base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-        'timeout' => (int) env('OPENAI_TIMEOUT_SECONDS', 45),
+        // Interactive support has a hard latency SLO. Legacy production env
+        // values are capped so an old 45-second setting cannot restore the
+        // multi-minute request path after deployment.
+        'timeout' => min(20, max(5, (int) env('OPENAI_TIMEOUT_SECONDS', 20))),
+        'connect_timeout' => min(5, max(1, (int) env('OPENAI_CONNECT_TIMEOUT_SECONDS', 5))),
+        'max_attempts' => min(2, max(1, (int) env('OPENAI_MAX_ATTEMPTS', 2))),
+        'reasoning_effort' => env('OPENAI_REASONING_EFFORT', 'none'),
+        'verbosity' => env('OPENAI_VERBOSITY', 'low'),
     ],
 
 ];

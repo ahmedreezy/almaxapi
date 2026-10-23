@@ -1,23 +1,26 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\UserController;
-use App\Http\Controllers\Api\SubscriptionController;
-use App\Http\Controllers\Api\PaymentController;
-use App\Http\Controllers\Api\GroupController;
-use App\Http\Controllers\Api\FootballTipController;
 use App\Http\Controllers\Api\AlmaxPredictionController;
-use App\Http\Controllers\Api\RecentWinController;
-use App\Http\Controllers\Api\TestimonialController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConfigController;
-use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\DeveloperAnalyticsController;
-use App\Http\Controllers\Api\WebhookController;
+use App\Http\Controllers\Api\FootballTipController;
+use App\Http\Controllers\Api\GroupController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\PackageReleaseController;
+use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\RecentWinController;
+use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\SupportAdminController;
+use App\Http\Controllers\Api\SupportChatController;
 use App\Http\Controllers\Api\SupportKnowledgeController;
 use App\Http\Controllers\Api\SupportReceiptController;
+use App\Http\Controllers\Api\TestimonialController;
 use App\Http\Controllers\Api\TwilioSupportWebhookController;
+use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\UserNotificationController;
+use App\Http\Controllers\Api\WebhookController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -32,10 +35,17 @@ use App\Http\Controllers\Api\TwilioSupportWebhookController;
 */
 
 // ─── Health check ──────────────────────────────────────────────────────────
-Route::get('/health', fn () => response()->json(['status' => 'ok', 'timestamp' => now()->toISOString()]));
+Route::get('/health', fn () => response()->json([
+    'status' => 'ok',
+    'timestamp' => now()->toISOString(),
+    'timezone' => config('app.timezone'),
+    'release' => config('app.release', 'unknown'),
+]));
 
 // ─── Developer analytics (role:developer only) ────────────────────────────
 Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'])
+    ->middleware('auth.dev');
+Route::get('/analytics/developer/support-insights', [DeveloperAnalyticsController::class, 'supportInsights'])
     ->middleware('auth.dev');
 Route::post('/analytics/developer/commission-withdrawals', [DeveloperAnalyticsController::class, 'storeCommissionWithdrawal'])
     ->middleware('auth.dev');
@@ -54,13 +64,21 @@ Route::get('/support/receipts/{payment}', [SupportReceiptController::class, 'sho
     ->name('support.receipt')
     ->middleware('signed');
 
+Route::prefix('support/chat')->middleware(['auth.user', 'throttle:60,1'])->group(function () {
+    Route::get('/', [SupportChatController::class, 'show']);
+    Route::post('/messages', [SupportChatController::class, 'store']);
+    Route::get('/attachments/{attachment}', [SupportChatController::class, 'attachment']);
+});
+
 Route::prefix('support/admin')->middleware('auth.admin')->group(function () {
     Route::get('/metrics', [SupportAdminController::class, 'metrics']);
     Route::get('/conversations', [SupportAdminController::class, 'index']);
     Route::get('/conversations/{conversation}', [SupportAdminController::class, 'show']);
     Route::patch('/conversations/{conversation}', [SupportAdminController::class, 'update']);
-    Route::post('/conversations/{conversation}/reply', [SupportAdminController::class, 'reply']);
-
+    Route::post('/conversations/{conversation}/takeover', [SupportAdminController::class, 'takeOver']);
+    Route::post('/conversations/{conversation}/messages', [SupportAdminController::class, 'reply']);
+    Route::post('/conversations/{conversation}/release', [SupportAdminController::class, 'releaseToAi']);
+    Route::get('/attachments/{attachment}', [SupportAdminController::class, 'attachment']);
     Route::get('/knowledge', [SupportKnowledgeController::class, 'index']);
     Route::post('/knowledge', [SupportKnowledgeController::class, 'store']);
     Route::patch('/knowledge/{article}', [SupportKnowledgeController::class, 'update']);
@@ -120,8 +138,24 @@ Route::prefix('groups')->group(function () {
         ->middleware('auth.admin');
 });
 
+Route::prefix('package-releases')->group(function () {
+    Route::get('/', [PackageReleaseController::class, 'index'])->middleware('auth.admin');
+    Route::post('/', [PackageReleaseController::class, 'store'])->middleware('auth.admin');
+    Route::post('/recovery', [PackageReleaseController::class, 'recovery'])->middleware('auth.admin');
+    Route::post('/{release}/result', [PackageReleaseController::class, 'result'])->middleware('auth.admin');
+    Route::get('/recoveries/me', [PackageReleaseController::class, 'recoveries'])->middleware('auth.user');
+});
+
+Route::prefix('user-notifications')->middleware('auth.user')->group(function () {
+    Route::get('/', [UserNotificationController::class, 'index']);
+    Route::patch('/{notification}/read', [UserNotificationController::class, 'read']);
+});
+
 // ─── Subscriptions ──────────────────────────────────────────────────────────
 Route::prefix('subscriptions')->group(function () {
+    Route::get('/me', [SubscriptionController::class, 'forMe'])
+        ->middleware('auth.user');
+
     // Public
     Route::post('/', [SubscriptionController::class, 'store'])
         ->middleware('throttle:subscription');

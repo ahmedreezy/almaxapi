@@ -1,8 +1,10 @@
-# Almax WhatsApp AI Support Setup
+# Almax AI Support Setup
 
 The Laravel API now receives Twilio WhatsApp messages, processes them through
 OpenAI, allows customer-scoped account lookups, enforces daily reply limits,
-and exposes admin APIs for human takeover and knowledge management.
+and exposes admin APIs for knowledge and conversation management. Website chat
+also accepts screenshots and recorded voice notes; administrators can take over
+a website conversation and explicitly return it to AI when finished.
 
 Accounts and services required:
 
@@ -28,15 +30,31 @@ TWILIO_STATUS_WEBHOOK_URL=https://almaxpredictions.com/api/support/twilio/status
 
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.4-mini
+OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_TIMEOUT_SECONDS=45
+OPENAI_TIMEOUT_SECONDS=20
+OPENAI_CONNECT_TIMEOUT_SECONDS=5
+OPENAI_MAX_ATTEMPTS=2
+OPENAI_REASONING_EFFORT=none
+OPENAI_VERBOSITY=low
 
 SUPPORT_DAILY_REPLY_LIMIT=10
 SUPPORT_TIMEZONE=Africa/Kampala
-SUPPORT_MAX_OUTPUT_TOKENS=800
+SUPPORT_MAX_OUTPUT_TOKENS=350
 SUPPORT_HISTORY_MESSAGES=10
 SUPPORT_KNOWLEDGE_ARTICLES=8
+SUPPORT_KNOWLEDGE_FAST_PATH_CONFIDENCE=0.76
+SUPPORT_PLATFORM_SYNC=true
+SUPPORT_PLATFORM_SYNC_BUDGET_SECONDS=12
 SUPPORT_MESSAGE_RETENTION_DAYS=365
+SUPPORT_JOB_TIMEOUT_SECONDS=60
+SUPPORT_JOB_TRIES=1
+SUPPORT_OPENAI_BUDGET_SECONDS=50
+SUPPORT_OPENAI_MAX_ROUNDS=3
+SUPPORT_MAX_IMAGE_KB=8192
+SUPPORT_MAX_AUDIO_KB=10240
+SUPPORT_TRANSCRIPTION_TIMEOUT_SECONDS=45
+DB_QUEUE_RETRY_AFTER=90
 ```
 
 Run:
@@ -52,14 +70,25 @@ php artisan route:cache
 Run a continuously supervised worker when the host supports it:
 
 ```bash
-php artisan queue:work database --queue=support,default --sleep=1 --tries=3 --timeout=90 --max-time=3600
+php artisan queue:work database --queue=support --sleep=1 --tries=1 --timeout=60 --max-time=3600
 ```
+
+For Supervisor, copy `scripts/almax-support-worker.conf.example`, replace the
+PHP and application paths, and load it through Supervisor or the hosting
+process manager.
 
 If cPanel cannot supervise a permanent process, add this cron every minute:
 
 ```cron
-* * * * * cd /absolute/path/to/almaxapi && php artisan queue:work database --queue=support,default --stop-when-empty --tries=3 --timeout=90 >> /dev/null 2>&1
+* * * * * cd /absolute/path/to/almaxapi && php artisan queue:work database --queue=support --stop-when-empty --tries=1 --timeout=60 >> /dev/null 2>&1
 ```
+
+The cron form is a fallback only and can add almost 60 seconds before a reply
+starts. WhatsApp and platform chat with `SUPPORT_PLATFORM_SYNC=false` should use
+Supervisor, systemd, or the cPanel Process Manager to keep the worker running
+continuously. With `SUPPORT_PLATFORM_SYNC=true`, website chat is processed in
+the request with a strict 12-second budget; published high-confidence knowledge
+answers and live package discovery normally complete without an OpenAI request.
 
 Keep the existing scheduler cron as well:
 
@@ -74,7 +103,9 @@ Keep the existing scheduler cron as well:
 3. Open that project's **API keys** page and choose **Create new secret key**.
 4. Copy the key once and place it in the server `.env` as `OPENAI_API_KEY`.
 5. In the project's **Limits** area, set a monthly budget and notification threshold.
-6. Set `OPENAI_MODEL=gpt-5.4-mini`; the model can later be changed without code edits.
+6. Set `OPENAI_MODEL=gpt-5.4-mini` for chat and screenshot interpretation, and
+   `OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe` for recorded voice notes. Both can
+   later be changed without code edits.
 7. Never place the key in Vue, JavaScript, source control, screenshots, or chat messages.
 
 Official references:
@@ -126,8 +157,9 @@ store; published knowledge is selected locally and included in the request.
 10. Refresh Laravel configuration with `php artisan optimize:clear`, then
     `php artisan config:cache`, and ensure the
    support queue worker is running.
-11. Send a text message from the joined phone. The first response must start:
-   **Hello, this is Almax Predictions. How can we help you today?**
+11. Send a text message from the joined phone. A greeting such as “Good
+    morning” should receive a natural greeting; a specific question should
+    receive a direct answer without a fixed introduction.
 
 Official references:
 
@@ -153,8 +185,8 @@ composer install
 
 The test environment uses an in-memory SQLite database. The suite verifies
 Twilio request signatures, rejection of invalid signatures, duplicate-message
-idempotency, queue dispatch, daily quotas, human takeover, mocked outbound
-Twilio requests, mocked OpenAI tool calls, and the required Almax greeting.
+idempotency, queue dispatch, daily quotas, administrator takeover safeguards,
+mocked outbound Twilio requests, mocked OpenAI tool calls, and natural greetings.
 
 ### B. Prepare the local Laravel application
 
@@ -231,7 +263,13 @@ TWILIO_WHATSAPP_FROM=the_sender_shown_in_your_twilio_sandbox
 
 OPENAI_API_KEY=your_openai_project_api_key
 OPENAI_MODEL=gpt-5.4-mini
+OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe
 OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_TIMEOUT_SECONDS=20
+OPENAI_CONNECT_TIMEOUT_SECONDS=5
+OPENAI_MAX_ATTEMPTS=2
+OPENAI_REASONING_EFFORT=none
+OPENAI_VERBOSITY=low
 ```
 
 The OpenAI account must have billing or credits enabled because
@@ -265,7 +303,7 @@ Then reload Laravel configuration:
 
 ```bash
 php artisan config:clear
-php artisan support:doctor
+php artisan support:doctor --channel=platform --probe-openai
 ```
 
 The configured URLs must exactly match the URLs Twilio calls. The application
@@ -293,7 +331,7 @@ both Twilio Sandbox URLs, and run `php artisan config:clear` again.
 Keep Laravel and ngrok running. In a third terminal, start the queue worker:
 
 ```bash
-php artisan queue:work database --queue=support,default --sleep=1 --tries=3 --timeout=90
+php artisan queue:work database --queue=support --sleep=1 --tries=1 --timeout=60
 ```
 
 Send `Hello` from the joined WhatsApp phone to the Sandbox sender. A successful
@@ -302,8 +340,7 @@ test has all of these results:
 1. The ngrok inspector shows a signed Twilio `POST` to the inbound URL with an
    HTTP `200` response.
 2. The queue terminal processes `ProcessSupportMessage` successfully.
-3. WhatsApp receives a reply beginning with
-   `Hello, this is Almax Predictions. How can we help you today?`.
+3. WhatsApp receives a natural reply to the message that was sent.
 4. Twilio Messaging Logs show the outbound message progressing through delivery
    states such as `queued`, `sent`, `delivered`, or `read`.
 5. Laravel stores one inbound and one outbound support message.
@@ -322,8 +359,9 @@ the queue terminal and Laravel log first; the most common causes are a stopped
 worker, missing OpenAI billing/key, an expired Sandbox join, or a phone that did
 not join this Sandbox.
 
-The `support:doctor` command never prints secret values and never contacts
-Twilio or OpenAI. All checks must show `PASS` before the live end-to-end test.
+The `support:doctor` command never prints secret values. It contacts OpenAI only
+when `--probe-openai` is supplied and never sends a Twilio message. All checks
+must show `PASS` before the live end-to-end test.
 
 ## 4. Register the production WhatsApp sender
 
@@ -425,22 +463,26 @@ Example published article body:
 Create separate `lg` articles for approved Luganda wording. Draft articles are
 never sent to the model.
 
-## 7. Human takeover and monitoring
+## 7. Conversation monitoring and platform-chat takeover
 
 Admin endpoints:
 
 - `GET /api/support/admin/conversations`
 - `GET /api/support/admin/conversations/{id}`
 - `PATCH /api/support/admin/conversations/{id}`
-- `POST /api/support/admin/conversations/{id}/reply`
+- `POST /api/support/admin/conversations/{id}/takeover`
+- `POST /api/support/admin/conversations/{id}/messages`
+- `POST /api/support/admin/conversations/{id}/release`
 - `GET /api/support/admin/metrics`
 
-Set `mode` to `human` to stop automated replies. An admin reply automatically
-sets this mode. Set `mode` back to `ai` to return control, or set `status` to
-`resolved` to close the case. Human messages do not consume the customer's AI
-allowance. Set `dailyLimit` on the conversation update endpoint to override the
-global allowance for that contact; use `null` to restore the global default or
-`0` to disable AI replies for that contact.
+WhatsApp conversations remain AI-operated. An administrator can take over a
+website chat, reply personally, and explicitly release it back to AI. AI jobs
+recheck ownership before saving a reply, so a takeover cannot race with a
+late model response. Set `status` to `resolved` to close a conversation. Set
+`dailyLimit` on the conversation update endpoint to
+override the global allowance for that contact; use `null` to restore the
+global default or `0` to disable AI replies for that contact. A failed OpenAI
+request leaves the conversation open in AI mode so the customer can retry.
 
 Monitor:
 

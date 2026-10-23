@@ -17,15 +17,20 @@ class Group extends Model
     ];
 
     protected $casts = [
-        'price'         => 'float',
+        'price' => 'float',
         'special_price' => 'float',
-        'is_special'    => 'boolean',
-        'is_active'     => 'boolean',
+        'is_special' => 'boolean',
+        'is_active' => 'boolean',
     ];
 
     public function subscriptions(): HasMany
     {
         return $this->hasMany(Subscription::class);
+    }
+
+    public function releases(): HasMany
+    {
+        return $this->hasMany(PackageRelease::class);
     }
 
     /**
@@ -36,9 +41,9 @@ class Group extends Model
     {
         return match ($this->plan_type) {
             'monthly' => 30 * 24 * 3600,
-            'weekly'  => 7 * 24 * 3600,
+            'weekly' => 7 * 24 * 3600,
             'special' => 7 * 24 * 3600,
-            default   => 24 * 3600,
+            default => 24 * 3600,
         };
     }
 
@@ -104,9 +109,9 @@ class Group extends Model
     }
 
     /**
-     * Whether this group is visible/purchasable by end-users.
-     * Regular groups: must be active.
-     * Special groups: must be active AND have a special_price set today.
+     * Whether this group is visible to end-users.
+     * Regular groups: must be active, even after their deadline.
+     * Special groups: must also have a special_price set.
      */
     public function isPubliclyVisible(): bool
     {
@@ -119,5 +124,11 @@ class Group extends Model
         }
 
         return true;
+    }
+
+    /** Whether this group can accept a new subscription right now. */
+    public function isPurchasable(): bool
+    {
+        return $this->isPubliclyVisible() && ! $this->isPastDeadline();
     }
 }

@@ -3,20 +3,24 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProcessSupportMessage;
 use App\Models\SupportConversation;
 use App\Models\SupportDailyUsage;
 use App\Models\SupportMessage;
-use App\Services\Support\TwilioWhatsAppService;
+use App\Models\SupportMessageAttachment;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SupportAdminController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'status' => ['sometimes', 'string', 'in:open,waiting_human,human,resolved'],
+            'status' => ['sometimes', 'string', 'in:open,resolved'],
+            'channel' => ['sometimes', 'string', 'in:platform,whatsapp'],
             'category' => ['sometimes', 'string', 'max:50'],
             'priority' => ['sometimes', 'string', 'in:low,normal,high,urgent'],
             'search' => ['sometimes', 'string', 'max:100'],
@@ -32,6 +36,9 @@ class SupportAdminController extends Controller
             if (! empty($data[$field])) {
                 $query->where($field, $data[$field]);
             }
+        }
+        if (! empty($data['channel'])) {
+            $query->whereHas('contact', fn ($contact) => $contact->where('channel', $data['channel']));
         }
         if (! empty($data['search'])) {
             $search = '%'.$data['search'].'%';
@@ -49,18 +56,17 @@ class SupportAdminController extends Controller
             'contact.user',
             'contact.dailyUsages' => fn ($query) => $query->orderByDesc('usage_date')->limit(30),
             'assignedAdmin',
-            'messages' => fn ($query) => $query->orderBy('id'),
+            'messages' => fn ($query) => $query->with('attachments')->orderBy('id'),
         ]));
     }
 
     public function update(Request $request, SupportConversation $conversation): JsonResponse
     {
         $data = $request->validate([
-            'mode' => ['sometimes', 'string', 'in:ai,waiting_human,human'],
-            'status' => ['sometimes', 'string', 'in:open,waiting_human,human,resolved'],
+            'mode' => ['sometimes', 'string', 'in:ai,human'],
+            'status' => ['sometimes', 'string', 'in:open,resolved'],
             'category' => ['sometimes', 'string', 'in:payment,subscription,account,prediction_content,technical,complaint,suggestion,other'],
             'priority' => ['sometimes', 'string', 'in:low,normal,high,urgent'],
-            'assignedAdminId' => ['sometimes', 'nullable', 'integer', 'exists:admin_users,id'],
             'summary' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'dailyLimit' => ['sometimes', 'nullable', 'integer', 'min:0', 'max:1000'],
         ]);
@@ -70,25 +76,15 @@ class SupportAdminController extends Controller
             unset($data['dailyLimit']);
         }
 
-        if (array_key_exists('assignedAdminId', $data)) {
-            $data['assigned_admin_id'] = $data['assignedAdminId'];
-            unset($data['assignedAdminId']);
-        }
         if (($data['status'] ?? null) === 'resolved') {
             $data['resolved_at'] = now();
         } elseif (isset($data['status'])) {
             $data['resolved_at'] = null;
         }
-        if (($data['mode'] ?? null) === 'human') {
-            $data['status'] = 'human';
-            $data['assigned_admin_id'] ??= $request->user()?->id;
-        }
-        if (($data['mode'] ?? null) === 'waiting_human') {
-            $data['status'] = 'waiting_human';
-            $data['human_requested_at'] = $conversation->human_requested_at ?? now();
-        }
         if (($data['mode'] ?? null) === 'ai' && $conversation->status !== 'resolved') {
             $data['status'] = 'open';
+            $data['assigned_admin_id'] = null;
+            $data['human_requested_at'] = null;
         }
 
         $conversation->update($data);
@@ -96,38 +92,82 @@ class SupportAdminController extends Controller
         return response()->json($conversation->fresh(['contact.user', 'assignedAdmin']));
     }
 
-    public function reply(
-        Request $request,
-        SupportConversation $conversation,
-        TwilioWhatsAppService $twilio
-    ): JsonResponse {
-        $data = $request->validate(['body' => ['required', 'string', 'max:1500']]);
-        $conversation->loadMissing('contact');
-        $sent = $twilio->sendText(
-            $conversation->contact->phone ?: $conversation->contact->external_id,
-            $data['body']
-        );
+    public function takeOver(Request $request, SupportConversation $conversation): JsonResponse
+    {
+        abort_unless($conversation->contact()->where('channel', 'platform')->exists(), 422, 'Only platform chats can be taken over.');
 
-        $message = DB::transaction(function () use ($request, $conversation, $data, $sent) {
-            $conversation->update([
+        $conversation = DB::transaction(function () use ($request, $conversation) {
+            $locked = SupportConversation::lockForUpdate()->findOrFail($conversation->id);
+            $locked->update([
                 'mode' => 'human',
-                'status' => 'human',
-                'assigned_admin_id' => $conversation->assigned_admin_id ?: $request->user()?->id,
-                'last_message_at' => now(),
+                'status' => 'open',
+                'assigned_admin_id' => $request->user()->id,
+                'human_requested_at' => now(),
+                'resolved_at' => null,
             ]);
 
-            return SupportMessage::create([
-                'conversation_id' => $conversation->id,
+            return $locked;
+        });
+
+        return response()->json($conversation->fresh(['contact.user', 'assignedAdmin']));
+    }
+
+    public function reply(Request $request, SupportConversation $conversation): JsonResponse
+    {
+        $data = $request->validate(['body' => ['required', 'string', 'max:5000']]);
+        abort_unless($conversation->contact()->where('channel', 'platform')->exists(), 422, 'Manual replies are limited to platform chats.');
+
+        $message = DB::transaction(function () use ($request, $conversation, $data) {
+            $locked = SupportConversation::lockForUpdate()->findOrFail($conversation->id);
+            abort_unless($locked->mode === 'human', 409, 'Take over this conversation before replying.');
+            abort_unless((int) $locked->assigned_admin_id === (int) $request->user()->id, 403, 'This conversation is assigned to another administrator.');
+
+            $message = SupportMessage::create([
+                'conversation_id' => $locked->id,
                 'direction' => 'outbound',
-                'sender_type' => 'human',
-                'body' => $data['body'],
-                'provider_message_id' => $sent['sid'] ?: null,
-                'delivery_status' => $sent['status'],
+                'sender_type' => 'admin',
+                'body' => trim($data['body']),
+                'delivery_status' => 'delivered',
+                'metadata' => ['admin_id' => $request->user()->id],
                 'sent_at' => now(),
             ]);
+            $locked->update(['last_message_at' => now(), 'status' => 'open']);
+
+            return $message;
         });
 
         return response()->json($message, 201);
+    }
+
+    public function releaseToAi(Request $request, SupportConversation $conversation): JsonResponse
+    {
+        abort_unless($conversation->contact()->where('channel', 'platform')->exists(), 422);
+        [$conversation, $latest] = DB::transaction(function () use ($conversation) {
+            $locked = SupportConversation::lockForUpdate()->findOrFail($conversation->id);
+            $locked->update([
+                'mode' => 'ai',
+                'status' => 'open',
+                'assigned_admin_id' => null,
+                'human_requested_at' => null,
+                'resolved_at' => null,
+            ]);
+
+            return [$locked, $locked->messages()->latest('id')->first()];
+        });
+        if ($latest?->direction === 'inbound') {
+            ProcessSupportMessage::dispatch($latest->id);
+        }
+
+        return response()->json($conversation->fresh(['contact.user', 'assignedAdmin']));
+    }
+
+    public function attachment(SupportMessageAttachment $attachment): StreamedResponse
+    {
+        return Storage::disk($attachment->disk)->response($attachment->path, $attachment->original_name, [
+            'Content-Type' => $attachment->mime_type,
+            'Cache-Control' => 'private, max-age=3600',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     public function metrics(): JsonResponse
