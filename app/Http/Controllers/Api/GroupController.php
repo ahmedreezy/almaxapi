@@ -28,7 +28,7 @@ class GroupController extends Controller
         $groups = Group::orderBy('price')
             ->get()
             ->filter(fn (Group $g) => $g->isPubliclyVisible())
-            ->map(fn (Group $g) => $this->formatGroup($g))
+            ->map(fn (Group $g) => $this->formatGroup($g, false))
             ->values();
 
         return response()->json($groups);
@@ -205,24 +205,29 @@ class GroupController extends Controller
         ];
     }
 
-    private function formatGroup(Group $group): array
+    private function formatGroup(Group $group, bool $includePrivate = true): array
     {
-        return [
+        $payload = [
             'id'                   => $group->id,
             'name'                 => $group->name,
             'oddsType'             => $group->odds_type,
             'planType'             => $group->plan_type,
             'price'                => $group->price,
-            'betslipLink'          => $group->betslip_link ?? '',
-            'betslipCode'          => $group->betslip_code ?? '',
             'isSpecial'            => (bool) $group->is_special,
             'isActive'             => (bool) $group->is_active,
             'specialPrice'         => $group->special_price,
             'specialOdds'          => $group->special_odds,
             'effectivePrice'       => $group->effectivePrice(),
-            'photoUrl'             => $group->photo_url ?? '',
             'subscriptionDeadline' => $group->subscription_deadline ?: null,
             'isClosed'             => $group->isPastDeadline(),
         ];
+
+        if ($includePrivate) {
+            $payload['betslipLink'] = $group->betslip_link ?? '';
+            $payload['betslipCode'] = $group->betslip_code ?? '';
+            $payload['photoUrl'] = $group->photo_url ?? '';
+        }
+
+        return $payload;
     }
 }

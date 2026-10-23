@@ -250,7 +250,11 @@ class SubscriptionTest extends TestCase
     public function test_pending_subscription_has_masked_betslip(): void
     {
         $ctx = $this->createUser('0712000002');
+        $group = $this->makeGroup([
+            'photo_url' => '/storage/groups/private.webp',
+        ]);
         $this->seedSubscription($ctx['user'], [
+            'group_id'     => $group->id,
             'status'       => 'pending',
             'betslip_link' => 'https://secret.link',
             'betslip_code' => 'SECRET-CODE',
@@ -263,6 +267,7 @@ class SubscriptionTest extends TestCase
         $sub = $response->json('0');
         $this->assertSame('', $sub['betslipLink']);
         $this->assertSame('', $sub['betslipCode']);
+        $this->assertSame('', $sub['packagePhoto']);
     }
 
     // ─── Admin: list & update ─────────────────────────────────────────────

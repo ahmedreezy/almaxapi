@@ -127,9 +127,26 @@ class GroupTest extends TestCase
         $this->getJson('/api/groups')
             ->assertStatus(200)
             ->assertJsonStructure([['id', 'name', 'oddsType', 'planType', 'price',
-                'betslipLink', 'betslipCode', 'isSpecial', 'isActive',
+                'isSpecial', 'isActive',
                 'specialPrice', 'specialOdds', 'effectivePrice',
                 'subscriptionDeadline', 'isClosed']]);
+    }
+
+    public function test_public_index_does_not_expose_paid_package_content(): void
+    {
+        $this->makeGroup([
+            'betslip_link' => 'https://private.example/slip',
+            'betslip_code' => 'PRIVATE-CODE',
+            'photo_url' => '/storage/groups/private.webp',
+        ]);
+
+        $group = $this->getJson('/api/groups')
+            ->assertStatus(200)
+            ->json('0');
+
+        $this->assertArrayNotHasKey('betslipLink', $group);
+        $this->assertArrayNotHasKey('betslipCode', $group);
+        $this->assertArrayNotHasKey('photoUrl', $group);
     }
 
     public function test_all_five_required_packages_are_present_after_migration(): void
