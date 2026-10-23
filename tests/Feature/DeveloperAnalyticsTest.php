@@ -60,7 +60,7 @@ class DeveloperAnalyticsTest extends TestCase
                 'confirmed_at' => now(),
             ]);
             $confirmed->forceFill(['created_at' => now()->subDay()])->save();
-            Payment::create([
+            $failed = Payment::create([
                 'subscription_id' => $sub->id,
                 'user_id' => $user->id,
                 'amount' => 5000,
@@ -68,10 +68,10 @@ class DeveloperAnalyticsTest extends TestCase
                 'payment_method' => 'airtel',
                 'phone' => $user->phone,
                 'status' => 'failed',
-                'created_at' => now(),
                 'failed_at' => now(),
                 'failure_category' => 'provider',
             ]);
+            $failed->forceFill(['created_at' => now()])->save();
 
             $response = $this->withHeaders($this->developerHeaders())
                 ->getJson('/api/analytics/developer')

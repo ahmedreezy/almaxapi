@@ -15,12 +15,14 @@ class Payment extends Model
         'subscription_id', 'user_id', 'amount',
         'plan_type', 'payment_method', 'phone', 'status',
         'payment_reference', 'transaction_id',
+        'provider', 'provider_request_id',
         'confirmed_at',
         'failure_category', 'failure_reason', 'failed_at', 'failure_alerted_at',
         'agent_commission_amount', 'agent_commission_ratio',
         'agent_commission_status', 'agent_commission_reference',
         'agent_commission_transaction_id', 'agent_commission_recipient',
         'agent_commission_error', 'agent_commission_processed_at',
+        'agent_commission_provider', 'agent_commission_provider_request_id',
         'receipt_number',
     ];
 

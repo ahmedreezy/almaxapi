@@ -7,12 +7,14 @@ use App\Models\Group;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\User;
-use App\Services\MobileMoneyService;
 use App\Services\PaymentFailureAlertService;
+use App\Services\Payments\AgentCommissionService;
+use App\Services\Payments\PaymentGatewayManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Manages the full subscription lifecycle.
@@ -140,6 +142,7 @@ class SubscriptionController extends Controller
                 'message' => 'A payment request is already in progress for this package. Please approve the existing prompt or wait a moment before retrying.',
                 'existingSubscriptionId' => $existingPending->id,
                 'paymentReference' => $existingPending->payment_reference,
+                'paymentProvider' => $existingPending->payment?->provider ?? 'jpesa',
                 'status' => $existingPending->status,
             ], 409);
         }
@@ -184,9 +187,14 @@ class SubscriptionController extends Controller
 
         // Unique reference for this payment attempt. Jpesa may echo this value
         // back as the GET callback tid, so persist it before the STK request.
-        $reference = 'ALX-'.$group->id.'-'.$data['userId'].'-'.time();
+        // Relworx requires an 8-36 character reference. Keep the same bounded,
+        // provider-neutral reference for every gateway.
+        $reference = 'ALX-'.Str::lower(Str::random(24));
 
-        [$sub, $payment] = DB::transaction(function () use ($data, $group, $reference, $effectiveAmount) {
+        $gatewayManager = app(PaymentGatewayManager::class);
+        $provider = $gatewayManager->activeName();
+
+        [$sub, $payment] = DB::transaction(function () use ($data, $group, $reference, $effectiveAmount, $provider) {
             $sub = Subscription::create([
                 'user_id' => $data['userId'],
                 'group_id' => $group->id,
@@ -208,39 +216,38 @@ class SubscriptionController extends Controller
                 'phone' => $data['phone'],
                 'status' => 'pending',
                 'payment_reference' => $reference,
-                'transaction_id' => $reference,
+                'provider' => $provider,
             ]);
 
             return [$sub, $payment];
         });
 
-        $mmService = new MobileMoneyService;
-        $pushResult = $mmService->initiateSTKPush(
+        $pushResult = $gatewayManager->gateway($provider)->initiateCollection(
             $data['phone'],
             $effectiveAmount,
             $reference,
             $data['paymentMethod']
         );
 
-        if (is_array($pushResult['raw'] ?? null)) {
-            $providerTxnId = $pushResult['raw']['tid']
-                ?? $pushResult['raw']['transaction_id']
-                ?? $pushResult['raw']['txn_id']
-                ?? null;
-
-            if ($providerTxnId) {
-                $payment->update(['transaction_id' => $providerTxnId]);
-            }
+        $providerRequestId = $pushResult['provider_request_id'] ?? null;
+        $providerTxnId = $pushResult['transaction_id'] ?? null;
+        if ($providerRequestId || $providerTxnId) {
+            $payment->update([
+                'provider_request_id' => $providerRequestId,
+                'transaction_id' => $providerTxnId,
+            ]);
         }
 
         if (! ($pushResult['success'] ?? false)) {
-            $sub->update(['status' => 'failed']);
-            $category = isset($pushResult['raw']) ? 'provider' : 'system';
-            app(PaymentFailureAlertService::class)->record(
-                $payment,
-                $category,
-                (string) ($pushResult['message'] ?? 'Payment initiation failed.')
-            );
+            if (! ($pushResult['pending'] ?? false)) {
+                $sub->update(['status' => 'failed']);
+                $category = isset($pushResult['raw']) ? 'provider' : 'system';
+                app(PaymentFailureAlertService::class)->record(
+                    $payment,
+                    $category,
+                    (string) ($pushResult['message'] ?? 'Payment initiation failed.')
+                );
+            }
         }
 
         return response()->json([
@@ -277,16 +284,28 @@ class SubscriptionController extends Controller
 
     private function tryActivateFromProviderQuery(Subscription $sub): void
     {
-        $txnId = $sub->payment?->transaction_id;
-
-        if (! $txnId || $txnId === $sub->payment_reference) {
+        $payment = $sub->payment;
+        if (! $payment) {
             return;
         }
 
-        $result = (new MobileMoneyService)->queryTransaction($txnId);
+        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment);
+        if (($result['status'] ?? 'unknown') === 'failed') {
+            $sub->update(['status' => 'failed']);
+            app(PaymentFailureAlertService::class)->record(
+                $payment,
+                'provider',
+                (string) ($result['message'] ?? 'Payment provider reported a failed transaction.')
+            );
+
+            return;
+        }
+
         if (! ($result['success'] ?? false)) {
             return;
         }
+
+        $txnId = $result['transaction_id'] ?? $payment->transaction_id ?? $payment->provider_request_id;
 
         $now = now();
         $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
@@ -336,6 +355,7 @@ class SubscriptionController extends Controller
             'planName' => $group?->name ?? null,
             'oddsType' => $sub->odds_type,
             'paymentMethod' => $sub->payment_method,
+            'paymentProvider' => $sub->payment?->provider ?? 'jpesa',
             'paymentReference' => $sub->payment_reference,
             'phone' => $sub->phone,
             'amount' => $sub->amount,
@@ -443,7 +463,7 @@ class SubscriptionController extends Controller
     public function submitTransaction(Request $request, int $id): JsonResponse
     {
         $data = $request->validate([
-            'transactionId' => ['required', 'string', 'min:4', 'max:80', 'regex:/^[A-Za-z0-9\-_.]+$/'],
+            'transactionId' => ['nullable', 'string', 'min:4', 'max:80', 'regex:/^[A-Za-z0-9\-_.]+$/'],
         ]);
 
         $sub = Subscription::with(['payment', 'group'])->findOrFail($id);
@@ -454,9 +474,20 @@ class SubscriptionController extends Controller
             ], 409);
         }
 
-        $txnId = $data['transactionId'];
-        $mmService = new MobileMoneyService;
-        $result = $mmService->queryTransaction($txnId);
+        $txnId = (string) ($data['transactionId'] ?? '');
+        $payment = $sub->payment;
+        if (! $payment) {
+            return response()->json(['error' => 'Payment record is unavailable.', 'verified' => false], 422);
+        }
+
+        $provider = $payment->provider ?: 'jpesa';
+        if ($provider === 'jpesa' && $txnId === '') {
+            return response()->json(['error' => 'Transaction ID is required for JPesa verification.', 'verified' => false], 422);
+        }
+
+        $gateway = app(PaymentGatewayManager::class)->forPayment($payment);
+        $manualReference = $provider === 'jpesa' ? $txnId : null;
+        $result = $gateway->queryCollection($payment, $manualReference);
 
         if (! $result['success']) {
             Log::warning('submitTransaction: verification failed', [
@@ -490,7 +521,8 @@ class SubscriptionController extends Controller
             $sub->payment->update([
                 'status' => 'confirmed',
                 'confirmed_at' => $sub->payment->confirmed_at ?: $now,
-                'transaction_id' => $txnId,
+                'transaction_id' => $result['transaction_id'] ?? $txnId,
+                'provider_request_id' => $result['provider_request_id'] ?? $sub->payment->provider_request_id,
             ]);
         }
 
@@ -515,7 +547,7 @@ class SubscriptionController extends Controller
         }
 
         try {
-            (new MobileMoneyService)->processAgentCommission($sub->payment->fresh(), $source);
+            app(AgentCommissionService::class)->process($sub->payment->fresh(), $source);
         } catch (\Throwable $e) {
             Log::error('Subscription activation: agent commission processing failed.', [
                 'source' => $source,
