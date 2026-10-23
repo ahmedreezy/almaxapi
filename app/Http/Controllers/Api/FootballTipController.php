@@ -135,7 +135,6 @@ class FootballTipController extends Controller
                 'planType'     => $group->plan_type,
                 'oddsType'     => $group->odds_type,
                 'effectivePrice' => $group->effectivePrice(),
-                'photoUrl'     => $group->photo_url ?? '',
                 'isClosed'     => $group->isPastDeadline(),
             ] : null,
         ];
