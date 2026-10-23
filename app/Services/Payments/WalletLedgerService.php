@@ -98,6 +98,37 @@ class WalletLedgerService
         ];
     }
 
+    public function providerSummary(string $beneficiary, string $provider): array
+    {
+        $currency = strtoupper((string) config('services.payment_gateway.currency', 'UGX'));
+        $account = $this->account($beneficiary, strtolower($provider), $currency);
+        $credited = (float) WalletLedgerEntry::query()
+            ->where('wallet_account_id', $account->id)
+            ->whereIn('entry_type', ['payment_credit', 'commission_credit'])
+            ->sum('amount');
+        $available = (float) WalletLedgerEntry::query()
+            ->where('wallet_account_id', $account->id)
+            ->sum('amount');
+        $reserved = (float) PayoutRequest::query()
+            ->where('wallet_account_id', $account->id)
+            ->whereIn('status', ['pending', 'processing'])
+            ->sum('amount');
+        $today = (float) WalletLedgerEntry::query()
+            ->where('wallet_account_id', $account->id)
+            ->whereIn('entry_type', ['payment_credit', 'commission_credit'])
+            ->whereBetween('created_at', [now()->startOfDay(), now()->endOfDay()])
+            ->sum('amount');
+
+        return [
+            'provider' => strtolower($provider),
+            'currency' => $currency,
+            'today_credited' => round($today, 2),
+            'credited' => round($credited, 2),
+            'reserved' => round($reserved, 2),
+            'available' => round(max(0, $available), 2),
+        ];
+    }
+
     public function createPayoutRequest(string $beneficiary, float $amount, int $actorId): PayoutRequest
     {
         if (! in_array($beneficiary, self::BENEFICIARIES, true)) {

@@ -3,12 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Payment;
 use App\Models\PayoutRequest;
 use App\Services\Payments\RelworxGateway;
 use App\Services\Payments\WalletLedgerService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class WalletController extends Controller
 {
@@ -20,12 +20,10 @@ class WalletController extends Controller
     public function developerShow(Request $request): JsonResponse
     {
         return response()->json([
-            'wallet' => $this->wallets->summary('developer'),
-            'jpesa' => $this->jpesaCommissionSummary(),
+            'wallet' => $this->wallets->providerSummary('developer', 'relworx'),
             'destination_configured' => trim((string) config('services.payouts.developer_msisdn', '')) !== '',
             'execution_mode' => config('services.payouts.execution_mode', 'request_only'),
             'requests' => $this->requests('developer', $request->user()?->id),
-            'legacy_withdrawals' => DB::table('commission_withdrawals')->latest('withdrawn_at')->limit(10)->get(),
         ]);
     }
 
@@ -37,7 +35,7 @@ class WalletController extends Controller
         return response()->json([
             'message' => 'Payout request reserved. It is awaiting an authorized payout connection.',
             'request' => $this->wallets->serialiseRequest($payout->load('requester')),
-            'wallet' => $this->wallets->summary('developer'),
+            'wallet' => $this->wallets->providerSummary('developer', 'relworx'),
         ], 201);
     }
 
@@ -48,15 +46,16 @@ class WalletController extends Controller
         return response()->json([
             'message' => 'Payout request cancelled and reserved funds released.',
             'request' => $this->wallets->serialiseRequest($payout->load('requester')),
-            'wallet' => $this->wallets->summary('developer'),
+            'wallet' => $this->wallets->providerSummary('developer', 'relworx'),
         ]);
     }
 
     public function adminShow(): JsonResponse
     {
         return response()->json([
-            'wallet' => $this->wallets->summary('owner'),
-            'developer_liability' => $this->wallets->summary('developer'),
+            'wallet' => $this->wallets->providerSummary('owner', 'relworx'),
+            'today_revenue' => $this->relworxRevenueToday(),
+            'developer_liability' => $this->wallets->providerSummary('developer', 'relworx'),
             'relworx_wallet' => $this->relworx->walletBalance(),
             'destination_configured' => trim((string) config('services.payouts.owner_msisdn', '')) !== '',
             'execution_mode' => config('services.payouts.execution_mode', 'request_only'),
@@ -77,7 +76,7 @@ class WalletController extends Controller
         return response()->json([
             'message' => 'Payout request reserved. It is awaiting an authorized payout connection.',
             'request' => $this->wallets->serialiseRequest($payout->load('requester')),
-            'wallet' => $this->wallets->summary('owner'),
+            'wallet' => $this->wallets->providerSummary('owner', 'relworx'),
         ], 201);
     }
 
@@ -88,7 +87,7 @@ class WalletController extends Controller
         return response()->json([
             'message' => 'Payout request cancelled and reserved funds released.',
             'request' => $this->wallets->serialiseRequest($payout->load('requester')),
-            'wallet' => $this->wallets->summary('owner'),
+            'wallet' => $this->wallets->providerSummary('owner', 'relworx'),
         ]);
     }
 
@@ -96,6 +95,7 @@ class WalletController extends Controller
     {
         return PayoutRequest::query()
             ->with('requester')
+            ->where('provider', 'relworx')
             ->when($beneficiary, fn ($query) => $query->where('beneficiary', $beneficiary))
             ->when($requesterId, fn ($query) => $query->where('requested_by', $requesterId))
             ->latest('id')
@@ -106,21 +106,12 @@ class WalletController extends Controller
             ->all();
     }
 
-    private function jpesaCommissionSummary(): array
+    private function relworxRevenueToday(): float
     {
-        $query = DB::table('payments')
+        return round((float) Payment::query()
             ->where('status', 'confirmed')
-            ->where('provider', 'jpesa')
-            ->where('agent_commission_amount', '>', 0);
-
-        return [
-            'earned' => (float) (clone $query)->sum('agent_commission_amount'),
-            'automatically_paid' => (float) (clone $query)
-                ->whereIn('agent_commission_status', ['sent', 'completed'])
-                ->sum('agent_commission_amount'),
-            'outstanding' => (float) (clone $query)
-                ->whereNotIn('agent_commission_status', ['sent', 'completed'])
-                ->sum('agent_commission_amount'),
-        ];
+            ->where('provider', 'relworx')
+            ->whereBetween('confirmed_at', [now()->startOfDay(), now()->endOfDay()])
+            ->sum('amount'), 2);
     }
 }

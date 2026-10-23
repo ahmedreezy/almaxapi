@@ -39,6 +39,23 @@ class PaymentGatewayTest extends TestCase
         $this->assertSame('jpesa', PaymentGatewaySetting::current()->active_provider);
     }
 
+    public function test_relworx_switch_is_blocked_when_live_account_validation_fails(): void
+    {
+        $this->configureRelworx();
+        Http::fake(['*/payment-requests/transactions*' => Http::response([
+            'success' => false,
+            'message' => 'API key is not authorized for this account.',
+        ], 403)]);
+
+        $this->withHeaders($this->developerHeaders())
+            ->patchJson('/api/developer/payment-gateway', ['provider' => 'relworx'])
+            ->assertStatus(422)
+            ->assertJsonPath('readiness.ready', false);
+
+        $this->assertSame('jpesa', PaymentGatewaySetting::current()->active_provider);
+        $this->assertDatabaseCount('payment_gateway_switches', 0);
+    }
+
     public function test_ready_relworx_account_can_be_activated_and_is_audited(): void
     {
         $this->configureRelworx();
@@ -52,6 +69,21 @@ class PaymentGatewayTest extends TestCase
         $this->assertDatabaseHas('payment_gateway_settings', ['id' => 1, 'active_provider' => 'relworx']);
         $this->assertDatabaseHas('payment_gateway_switches', ['from_provider' => 'jpesa', 'to_provider' => 'relworx']);
         $this->assertSame(1, PaymentGatewaySwitch::count());
+    }
+
+    public function test_switching_provider_keeps_exactly_one_gateway_active(): void
+    {
+        $this->configureRelworx();
+        Http::fake(['*/payment-requests/transactions*' => Http::response(['success' => true, 'transactions' => []])]);
+
+        $this->withHeaders($this->developerHeaders())
+            ->patchJson('/api/developer/payment-gateway', ['provider' => 'relworx'])
+            ->assertOk()
+            ->assertJsonPath('activeProvider', 'relworx');
+
+        $this->assertDatabaseCount('payment_gateway_settings', 1);
+        $this->assertSame('relworx', PaymentGatewaySetting::current()->active_provider);
+        $this->assertSame('relworx', app(\App\Services\Payments\PaymentGatewayManager::class)->activeName());
     }
 
     public function test_relworx_signature_accepts_current_hex_signature_and_rejects_stale_signature(): void

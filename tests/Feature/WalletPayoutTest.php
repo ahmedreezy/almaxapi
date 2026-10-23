@@ -79,15 +79,16 @@ class WalletPayoutTest extends TestCase
         $response = $this->withHeaders($headers)->postJson('/api/developer/payout-requests', ['amount' => 600]);
         $response->assertCreated()
             ->assertJsonPath('request.status', 'pending')
-            ->assertJsonPath('wallet.by_provider.relworx.available', 400)
-            ->assertJsonPath('wallet.by_provider.relworx.reserved', 600);
+            ->assertJsonPath('wallet.provider', 'relworx')
+            ->assertJsonPath('wallet.available', 400)
+            ->assertJsonPath('wallet.reserved', 600);
 
         $id = $response->json('request.id');
         $this->withHeaders($headers)
             ->postJson("/api/developer/payout-requests/{$id}/cancel")
             ->assertOk()
             ->assertJsonPath('request.status', 'cancelled')
-            ->assertJsonPath('wallet.by_provider.relworx.available', 1000);
+            ->assertJsonPath('wallet.available', 1000);
     }
 
     public function test_payout_uses_fixed_destination_and_rejects_overdraw(): void
@@ -138,8 +139,10 @@ class WalletPayoutTest extends TestCase
             ->getJson('/api/admin/wallet')
             ->assertOk()
             ->assertJsonPath('relworx_wallet.balance', 3750)
-            ->assertJsonPath('wallet.by_provider.relworx.available', 4000)
-            ->assertJsonPath('developer_liability.by_provider.relworx.available', 1000);
+            ->assertJsonPath('today_revenue', 5000)
+            ->assertJsonPath('wallet.provider', 'relworx')
+            ->assertJsonPath('wallet.available', 4000)
+            ->assertJsonPath('developer_liability.available', 1000);
     }
 
     public function test_roles_cannot_cross_wallet_boundaries(): void
