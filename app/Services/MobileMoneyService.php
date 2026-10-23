@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Payment;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -63,11 +64,12 @@ class MobileMoneyService
      */
     public function initiateSTKPush(string $phone, float $amount, string $reference, string $paymentMethod): array
     {
-        // While the provider is not yet configured, return a pending state
-        // so the subscription record is created and can be activated manually
-        // or via webhook once credentials are plugged in.
+        // Missing credentials mean the provider cannot have accepted the
+        // request. Return a definite failure so the ledger does not leave an
+        // impossible payment pending. Network exceptions below remain
+        // non-final because acceptance may be unknown.
         if (empty($this->apiUrl) || empty($this->apiKey)) {
-            Log::info('MobileMoneyService: provider not configured — subscription created as pending.', [
+            Log::error('MobileMoneyService: provider is not configured.', [
                 'phone'     => $phone,
                 'amount'    => $amount,
                 'reference' => $reference,
@@ -77,8 +79,7 @@ class MobileMoneyService
             return [
                 'success'   => false,
                 'reference' => $reference,
-                'message'   => 'Payment provider not yet configured. Your request has been recorded and will be processed manually.',
-                'pending'   => true,
+                'message'   => 'Payment provider is not configured.',
             ];
         }
 
@@ -151,6 +152,19 @@ class MobileMoneyService
                 'message'   => (is_array($json) ? ($json['message'] ?? null) : null)
                     ?? 'Payment initiation failed at provider.',
                 'raw'       => is_array($json) ? $json : ['body' => $response->body()],
+            ];
+        } catch (ConnectionException $e) {
+            Log::warning('MobileMoneyService: STK push outcome is uncertain.', [
+                'reference' => $reference,
+                'endpoint'  => $apiUrl,
+                'error'     => $e->getMessage(),
+            ]);
+
+            return [
+                'success'   => false,
+                'reference' => $reference,
+                'message'   => 'The payment provider did not return a definitive response. The request remains pending.',
+                'pending'   => true,
             ];
         } catch (\Throwable $e) {
             Log::error('MobileMoneyService: STK push request failed.', [
