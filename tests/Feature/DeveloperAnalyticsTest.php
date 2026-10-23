@@ -8,6 +8,7 @@ use App\Models\Subscription;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -17,8 +18,8 @@ class DeveloperAnalyticsTest extends TestCase
     private function developerHeaders(): array
     {
         $dev = AdminUser::create([
-            'username'      => 'almaxdev-test',
-            'role'          => 'developer',
+            'username' => 'almaxdev-test',
+            'role' => 'developer',
             'password_hash' => Hash::make('DevPassword@2026'),
         ]);
 
@@ -98,19 +99,19 @@ class DeveloperAnalyticsTest extends TestCase
         Config::set('services.mobile_money.agent_commission.ratio', 0.2);
 
         $user = User::create([
-            'username'      => 'Commission Member',
-            'phone'         => '0700777001',
+            'username' => 'Commission Member',
+            'phone' => '0700777001',
             'password_hash' => Hash::make('password123'),
         ]);
 
         $sub = Subscription::create([
-            'user_id'        => $user->id,
-            'odds_type'      => '2',
-            'plan_type'      => 'daily',
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
             'payment_method' => 'airtel',
-            'phone'          => $user->phone,
-            'amount'         => 10000,
-            'status'         => 'active',
+            'phone' => $user->phone,
+            'amount' => 10000,
+            'status' => 'active',
         ]);
 
         Payment::create([
@@ -195,7 +196,7 @@ class DeveloperAnalyticsTest extends TestCase
             ->assertStatus(403);
     }
 
-    public function test_developer_can_record_jpesa_withdrawal_and_available_commission_updates(): void
+    public function test_legacy_jpesa_withdrawals_are_read_only_and_remain_visible(): void
     {
         Config::set('services.mobile_money.agent_commission.enabled', true);
         Config::set('services.mobile_money.agent_commission.ratio', 0.1);
@@ -203,19 +204,19 @@ class DeveloperAnalyticsTest extends TestCase
         Config::set('services.mobile_money.agent_commission.recipient_email', 'prof.markdemo@gmail.com');
 
         $user = User::create([
-            'username'      => 'Withdrawal Commission Member',
-            'phone'         => '0700777003',
+            'username' => 'Withdrawal Commission Member',
+            'phone' => '0700777003',
             'password_hash' => Hash::make('password123'),
         ]);
 
         $sub = Subscription::create([
-            'user_id'        => $user->id,
-            'odds_type'      => '2',
-            'plan_type'      => 'weekly',
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'weekly',
             'payment_method' => 'mtn',
-            'phone'          => $user->phone,
-            'amount'         => 50000,
-            'status'         => 'active',
+            'phone' => $user->phone,
+            'amount' => 50000,
+            'status' => 'active',
         ]);
 
         Payment::create([
@@ -233,17 +234,21 @@ class DeveloperAnalyticsTest extends TestCase
 
         $headers = $this->developerHeaders();
 
+        DB::table('commission_withdrawals')->insert([
+            'amount' => 2000,
+            'reference' => 'JPESA-WD-001',
+            'wallet_account' => 'prof.markdemo@gmail.com',
+            'withdrawn_at' => now(),
+            'created_at' => now(),
+        ]);
+
         $this->withHeaders($headers)
             ->postJson('/api/analytics/developer/commission-withdrawals', [
                 'amount' => 2000,
                 'reference' => 'JPESA-WD-001',
                 'withdrawn_at' => now()->toDateString(),
             ])
-            ->assertStatus(201)
-            ->assertJsonPath('success', true)
-            ->assertJsonPath('commission.wallet_received', 5000)
-            ->assertJsonPath('commission.total_withdrawn', 2000)
-            ->assertJsonPath('commission.available', 3000);
+            ->assertNotFound();
 
         $this->assertDatabaseHas('commission_withdrawals', [
             'reference' => 'JPESA-WD-001',
@@ -270,32 +275,32 @@ class DeveloperAnalyticsTest extends TestCase
         Config::set('services.mobile_money.api_key', 'source-key');
         Config::set('services.mobile_money.callback_url', 'https://example.test/api/payments/webhook');
         Config::set('services.mobile_money.agent_commission', [
-            'enabled'          => true,
-            'ratio'            => 0.2,
-            'recipient_type'   => 'business',
-            'recipient_email'  => 'prof.markdemo@gmail.com',
+            'enabled' => true,
+            'ratio' => 0.2,
+            'recipient_type' => 'business',
+            'recipient_email' => 'prof.markdemo@gmail.com',
             'recipient_mobile' => '0704045918',
-            'transfer_action'  => 'debit',
-            'transfer_pt'      => 'gwallet',
-            'currency'         => 'UGX',
+            'transfer_action' => 'debit',
+            'transfer_pt' => 'gwallet',
+            'currency' => 'UGX',
         ]);
 
         Http::fake(fn () => Http::response(['status' => 'success', 'tid' => 'RETRY-COM-123'], 200));
 
         $user = User::create([
-            'username'      => 'Retry Commission Member',
-            'phone'         => '0700777002',
+            'username' => 'Retry Commission Member',
+            'phone' => '0700777002',
             'password_hash' => Hash::make('password123'),
         ]);
 
         $sub = Subscription::create([
-            'user_id'        => $user->id,
-            'odds_type'      => '2',
-            'plan_type'      => 'daily',
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
             'payment_method' => 'airtel',
-            'phone'          => $user->phone,
-            'amount'         => 20000,
-            'status'         => 'active',
+            'phone' => $user->phone,
+            'amount' => 20000,
+            'status' => 'active',
             'payment_reference' => 'ALX-RETRY-TEST',
         ]);
 

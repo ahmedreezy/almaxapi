@@ -67,6 +67,13 @@ return [
         'webhook_url' => env('RELWORX_WEBHOOK_URL', ''),
         'webhook_tolerance' => env('RELWORX_WEBHOOK_TOLERANCE_SECONDS', 300),
         'timeout' => env('RELWORX_REQUEST_TIMEOUT_SECONDS', 30),
+        'payouts_enabled' => env('RELWORX_PAYOUTS_ENABLED', false),
+    ],
+
+    'payouts' => [
+        'execution_mode' => env('PAYOUT_EXECUTION_MODE', 'request_only'),
+        'owner_msisdn' => env('PAYMENT_OWNER_PAYOUT_MSISDN', ''),
+        'developer_msisdn' => env('PAYMENT_DEVELOPER_PAYOUT_MSISDN', env('PAYMENT_COMMISSION_RECIPIENT_MSISDN', '')),
     ],
 
     'payment_failure_alert' => [

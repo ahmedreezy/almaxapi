@@ -1,0 +1,199 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\AdminUser;
+use App\Models\Payment;
+use App\Models\Subscription;
+use App\Models\User;
+use App\Services\Payments\AgentCommissionService;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+class WalletPayoutTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Config::set('services.payment_gateway.currency', 'UGX');
+        Config::set('services.payouts', [
+            'execution_mode' => 'request_only',
+            'owner_msisdn' => '+256700000111',
+            'developer_msisdn' => '+256700000222',
+        ]);
+        Config::set('services.mobile_money.agent_commission', [
+            'enabled' => true,
+            'ratio' => 0.2,
+            'mobile' => '+256700000222',
+            'recipient_type' => 'mobile',
+            'recipient_mobile' => '+256700000222',
+        ]);
+    }
+
+    public function test_relworx_confirmation_accrues_separate_balances_without_sending_payment(): void
+    {
+        Http::fake();
+        $payment = $this->confirmedPayment('relworx', 5000);
+
+        $result = app(AgentCommissionService::class)->process($payment, 'test');
+
+        $this->assertTrue($result['accrued']);
+        $this->assertDatabaseHas('payments', [
+            'id' => $payment->id,
+            'agent_commission_amount' => 1000,
+            'agent_commission_status' => 'accrued',
+        ]);
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payment_id' => $payment->id,
+            'entry_type' => 'payment_credit',
+            'amount' => 4000,
+        ]);
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payment_id' => $payment->id,
+            'entry_type' => 'commission_credit',
+            'amount' => 1000,
+        ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_accrual_is_idempotent(): void
+    {
+        Http::fake();
+        $payment = $this->confirmedPayment('relworx', 5000);
+        $service = app(AgentCommissionService::class);
+
+        $service->process($payment, 'first');
+        $service->process($payment->fresh(), 'duplicate');
+
+        $this->assertDatabaseCount('wallet_ledger_entries', 2);
+    }
+
+    public function test_developer_can_reserve_and_cancel_own_relworx_payout(): void
+    {
+        Http::fake();
+        app(AgentCommissionService::class)->process($this->confirmedPayment('relworx', 5000), 'test');
+        $headers = $this->developerHeaders('wallet-developer');
+
+        $response = $this->withHeaders($headers)->postJson('/api/developer/payout-requests', ['amount' => 600]);
+        $response->assertCreated()
+            ->assertJsonPath('request.status', 'pending')
+            ->assertJsonPath('wallet.by_provider.relworx.available', 400)
+            ->assertJsonPath('wallet.by_provider.relworx.reserved', 600);
+
+        $id = $response->json('request.id');
+        $this->withHeaders($headers)
+            ->postJson("/api/developer/payout-requests/{$id}/cancel")
+            ->assertOk()
+            ->assertJsonPath('request.status', 'cancelled')
+            ->assertJsonPath('wallet.by_provider.relworx.available', 1000);
+    }
+
+    public function test_payout_uses_fixed_destination_and_rejects_overdraw(): void
+    {
+        Http::fake();
+        app(AgentCommissionService::class)->process($this->confirmedPayment('relworx', 5000), 'test');
+        $headers = $this->developerHeaders('fixed-destination-developer');
+
+        $this->withHeaders($headers)
+            ->postJson('/api/developer/payout-requests', [
+                'amount' => 1200,
+                'destination_msisdn' => '+256799999999',
+            ])
+            ->assertUnprocessable();
+
+        $this->withHeaders($headers)
+            ->postJson('/api/developer/payout-requests', [
+                'amount' => 500,
+                'destination_msisdn' => '+256799999999',
+            ])
+            ->assertCreated();
+
+        $this->assertDatabaseHas('payout_requests', [
+            'beneficiary' => 'developer',
+            'amount' => 500,
+            'destination_msisdn' => '+256700000222',
+            'status' => 'pending',
+        ]);
+    }
+
+    public function test_admin_sees_live_relworx_cash_and_separate_developer_liability(): void
+    {
+        Http::fake([
+            '*/mobile-money/check-wallet-balance*' => Http::response(['success' => true, 'balance' => 3750]),
+        ]);
+        Config::set('services.relworx', [
+            'api_url' => 'https://payments.relworx.com/api',
+            'api_key' => 'test-key',
+            'account_no' => 'REL-TEST',
+            'webhook_key' => 'webhook-key',
+            'webhook_url' => 'https://example.test/api/payments/webhooks/relworx',
+            'timeout' => 10,
+            'payouts_enabled' => false,
+        ]);
+        app(AgentCommissionService::class)->process($this->confirmedPayment('relworx', 5000), 'test');
+
+        $this->withHeaders($this->createAdmin('wallet-owner')['headers'])
+            ->getJson('/api/admin/wallet')
+            ->assertOk()
+            ->assertJsonPath('relworx_wallet.balance', 3750)
+            ->assertJsonPath('wallet.by_provider.relworx.available', 4000)
+            ->assertJsonPath('developer_liability.by_provider.relworx.available', 1000);
+    }
+
+    public function test_roles_cannot_cross_wallet_boundaries(): void
+    {
+        $this->withHeaders($this->createAdmin('wallet-boundary-owner')['headers'])
+            ->getJson('/api/developer/wallet')
+            ->assertForbidden();
+
+        $this->withHeaders($this->developerHeaders('wallet-boundary-developer'))
+            ->getJson('/api/admin/wallet')
+            ->assertForbidden();
+    }
+
+    private function confirmedPayment(string $provider, float $amount): Payment
+    {
+        $suffix = (string) random_int(100000, 999999);
+        $user = User::create([
+            'username' => 'Wallet User',
+            'phone' => '07'.$suffix.'00',
+            'password_hash' => Hash::make('pass'),
+        ]);
+        $subscription = Subscription::create([
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'payment_method' => 'airtel',
+            'phone' => $user->phone,
+            'amount' => $amount,
+            'status' => 'active',
+        ]);
+
+        return Payment::create([
+            'subscription_id' => $subscription->id,
+            'user_id' => $user->id,
+            'amount' => $amount,
+            'plan_type' => 'daily',
+            'payment_method' => 'airtel',
+            'phone' => $user->phone,
+            'status' => 'confirmed',
+            'provider' => $provider,
+            'payment_reference' => 'ALX-'.$suffix,
+            'confirmed_at' => now(),
+        ]);
+    }
+
+    private function developerHeaders(string $username): array
+    {
+        $developer = AdminUser::create([
+            'username' => $username,
+            'role' => 'developer',
+            'password_hash' => Hash::make('DevPassword@2026'),
+        ]);
+        $token = $developer->createToken('wallet-developer', ['role:developer'])->plainTextToken;
+
+        return ['Authorization' => "Bearer {$token}"];
+    }
+}

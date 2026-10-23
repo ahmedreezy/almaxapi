@@ -18,7 +18,10 @@ class RelworxGateway implements PaymentGateway
 
     public function capabilities(): array
     {
-        return ['collections' => true, 'payouts' => true];
+        return [
+            'collections' => true,
+            'payouts' => (bool) config('services.relworx.payouts_enabled', false),
+        ];
     }
 
     public function readiness(bool $live = false): array
@@ -29,7 +32,6 @@ class RelworxGateway implements PaymentGateway
             'RELWORX_ACCOUNT_NO' => (string) config('services.relworx.account_no', ''),
             'RELWORX_WEBHOOK_KEY' => (string) config('services.relworx.webhook_key', ''),
             'RELWORX_WEBHOOK_URL' => (string) config('services.relworx.webhook_url', ''),
-            'PAYMENT_COMMISSION_RECIPIENT_MSISDN' => (string) config('services.mobile_money.agent_commission.mobile', ''),
         ];
         $missing = array_keys(array_filter($required, fn ($value) => trim($value) === ''));
         if ($missing !== []) {
@@ -111,6 +113,15 @@ class RelworxGateway implements PaymentGateway
 
     public function initiatePayout(int $amount, string $reference, string $description, string $mobile): array
     {
+        if (! (bool) config('services.relworx.payouts_enabled', false)) {
+            return [
+                'success' => false,
+                'pending' => false,
+                'final' => false,
+                'message' => 'Relworx API payouts are not enabled for this account.',
+            ];
+        }
+
         return $this->send('/mobile-money/send-payment', [
             'account_no' => config('services.relworx.account_no'),
             'reference' => substr($reference, 0, 36),
@@ -119,6 +130,47 @@ class RelworxGateway implements PaymentGateway
             'amount' => round($amount, 2),
             'description' => $description,
         ], true);
+    }
+
+    public function walletBalance(): array
+    {
+        $readiness = $this->readiness(false);
+        if (! $readiness['configured']) {
+            return [
+                'available' => false,
+                'balance' => null,
+                'currency' => config('services.payment_gateway.currency', 'UGX'),
+                'message' => $readiness['message'],
+            ];
+        }
+
+        try {
+            $currency = strtoupper((string) config('services.payment_gateway.currency', 'UGX'));
+            $response = $this->client()->get($this->apiUrl().'/mobile-money/check-wallet-balance', [
+                'account_no' => config('services.relworx.account_no'),
+                'currency' => $currency,
+            ]);
+            $json = $response->json() ?: [];
+            $available = $response->successful() && ($json['success'] ?? false) === true;
+
+            return [
+                'available' => $available,
+                'balance' => $available ? (float) ($json['balance'] ?? 0) : null,
+                'currency' => $currency,
+                'checked_at' => now()->toIso8601String(),
+                'message' => $available ? 'Relworx wallet balance retrieved.' : (string) ($json['message'] ?? 'Relworx wallet balance is unavailable.'),
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('Relworx wallet balance check failed.', ['error' => $e->getMessage()]);
+
+            return [
+                'available' => false,
+                'balance' => null,
+                'currency' => config('services.payment_gateway.currency', 'UGX'),
+                'checked_at' => now()->toIso8601String(),
+                'message' => 'Could not reach Relworx for the live wallet balance.',
+            ];
+        }
     }
 
     public function verifyWebhook(Request $request): bool

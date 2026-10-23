@@ -7,35 +7,69 @@ use Illuminate\Support\Facades\Log;
 
 class AgentCommissionService
 {
-    public function __construct(private readonly PaymentGatewayManager $gateways) {}
+    public function __construct(
+        private readonly PaymentGatewayManager $gateways,
+        private readonly WalletLedgerService $wallets,
+    ) {}
 
     public function process(Payment $payment, string $source): array
     {
         $commission = config('services.mobile_money.agent_commission', []);
         $enabled = filter_var($commission['enabled'] ?? false, FILTER_VALIDATE_BOOL);
         $ratio = (float) ($commission['ratio'] ?? 0.2);
-        if (! $enabled || $ratio <= 0) {
-            return ['success' => false, 'skipped' => true, 'message' => 'Agent commission is disabled.'];
-        }
-
         $payment->refresh();
         if ($payment->status !== 'confirmed') {
             return ['success' => false, 'skipped' => true, 'message' => 'Payment is not confirmed.'];
         }
 
-        $mobile = trim((string) ($commission['mobile'] ?? $commission['recipient_mobile'] ?? ''));
         $provider = $payment->provider ?: 'jpesa';
-        $jpesaRecipient = trim((string) ($commission['recipient_email'] ?? '')) !== '' || $mobile !== '';
-        if (($provider === 'relworx' && $mobile === '') || ($provider === 'jpesa' && ! $jpesaRecipient)) {
-            return ['success' => false, 'skipped' => true, 'message' => 'Commission recipient mobile is not configured.'];
-        }
+        $amount = $enabled && $ratio > 0
+            ? (int) round(((float) $payment->amount) * $ratio)
+            : 0;
 
-        $amount = (int) round(((float) $payment->amount) * $ratio);
-        if ($amount < 1) {
-            return ['success' => false, 'skipped' => true, 'message' => 'Commission amount rounded below 1.'];
+        if (! $enabled || $ratio <= 0 || $amount < 1) {
+            $this->wallets->accrueConfirmedPayment($payment, 0, false);
+
+            return ['success' => false, 'skipped' => true, 'message' => 'Agent commission is disabled.'];
         }
 
         $reference = $payment->agent_commission_reference ?: $this->reference($payment);
+        if ($provider === 'relworx') {
+            $currentStatus = strtolower((string) $payment->agent_commission_status);
+            if (in_array($currentStatus, ['sent', 'completed', 'processing'], true)) {
+                $this->wallets->accrueConfirmedPayment($payment, $amount, false);
+
+                return ['success' => false, 'skipped' => true, 'message' => 'Legacy Relworx commission is already settled or requires reconciliation.'];
+            }
+
+            $payment->update([
+                'agent_commission_amount' => $amount,
+                'agent_commission_ratio' => $ratio,
+                'agent_commission_status' => 'accrued',
+                'agent_commission_reference' => $reference,
+                'agent_commission_provider' => 'relworx',
+                'agent_commission_provider_request_id' => null,
+                'agent_commission_transaction_id' => null,
+                'agent_commission_error' => null,
+                'agent_commission_processed_at' => now(),
+            ]);
+            $this->wallets->accrueConfirmedPayment($payment->fresh(), $amount, true);
+
+            return [
+                'success' => true,
+                'accrued' => true,
+                'final' => false,
+                'message' => 'Relworx commission accrued for payout request.',
+            ];
+        }
+
+        $mobile = trim((string) ($commission['mobile'] ?? $commission['recipient_mobile'] ?? ''));
+        $jpesaRecipient = trim((string) ($commission['recipient_email'] ?? '')) !== '' || $mobile !== '';
+        if (! $jpesaRecipient) {
+            $this->wallets->accrueConfirmedPayment($payment, $amount, false);
+
+            return ['success' => false, 'skipped' => true, 'message' => 'Commission recipient mobile is not configured.'];
+        }
         $claimed = Payment::whereKey($payment->id)
             ->where('status', 'confirmed')
             ->where(function ($query) {
@@ -55,8 +89,12 @@ class AgentCommissionService
             ]);
 
         if ($claimed === 0) {
+            $this->wallets->accrueConfirmedPayment($payment, $amount, false);
+
             return ['success' => false, 'skipped' => true, 'message' => 'Agent commission already handled or in progress.'];
         }
+
+        $this->wallets->accrueConfirmedPayment($payment->fresh(), $amount, false);
 
         $result = $this->gateways->gateway($provider)->initiatePayout(
             $amount,

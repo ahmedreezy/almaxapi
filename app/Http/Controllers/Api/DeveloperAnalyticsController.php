@@ -11,7 +11,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\ValidationException;
 
 /**
  * Developer-only analytics dashboard data.
@@ -47,6 +46,7 @@ class DeveloperAnalyticsController extends Controller
         return match (strtolower(trim((string) $status))) {
             'sent', 'completed' => 'completed',
             'processing' => 'processing',
+            'accrued' => 'accrued',
             'failed', 'failure', 'error' => 'failed',
             default => 'pending',
         };
@@ -66,14 +66,6 @@ class DeveloperAnalyticsController extends Controller
         return $recipientType === 'mobile'
             ? ($mobile ?: $email)
             : ($email ?: $mobile);
-    }
-
-    private function commissionWalletReceived(): float
-    {
-        return (float) $this->trackedCommissionBase()
-            ->get(['agent_commission_amount', 'agent_commission_status'])
-            ->filter(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status) === 'completed')
-            ->sum('agent_commission_amount');
     }
 
     private function applyConfirmationWindow($query, Carbon $start, ?Carbon $end = null)
@@ -256,6 +248,7 @@ class DeveloperAnalyticsController extends Controller
         $commByStatus = collect([
             'completed' => ['count' => 0, 'amount' => 0.0],
             'processing' => ['count' => 0, 'amount' => 0.0],
+            'accrued' => ['count' => 0, 'amount' => 0.0],
             'pending' => ['count' => 0, 'amount' => 0.0],
             'failed' => ['count' => 0, 'amount' => 0.0],
         ])->merge($commByStatus);
@@ -332,8 +325,13 @@ class DeveloperAnalyticsController extends Controller
 
         // ── Charts (last 30 days) ──────────────────────────────────────────
         $sqlTimezone = str_replace("'", "''", $timezone);
-        $confirmationDateSql = "(COALESCE(confirmed_at, created_at) AT TIME ZONE '{$sqlTimezone}')::date";
-        $signupDateSql = "(created_at AT TIME ZONE '{$sqlTimezone}')::date";
+        if (DB::getDriverName() === 'sqlite') {
+            $confirmationDateSql = 'date(COALESCE(confirmed_at, created_at))';
+            $signupDateSql = 'date(created_at)';
+        } else {
+            $confirmationDateSql = "(COALESCE(confirmed_at, created_at) AT TIME ZONE '{$sqlTimezone}')::date";
+            $signupDateSql = "(created_at AT TIME ZONE '{$sqlTimezone}')::date";
+        }
         $revenueChart = DB::table('payments')
             ->select(
                 DB::raw("{$confirmationDateSql} as date"),
@@ -605,63 +603,6 @@ class DeveloperAnalyticsController extends Controller
             'trend' => $trend,
             'recent_feedback' => $recentFeedback,
         ]);
-    }
-
-    public function storeCommissionWithdrawal(Request $request): JsonResponse
-    {
-        if (! Schema::hasTable('commission_withdrawals')) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Commission withdrawals table is not ready. Run database migrations first.',
-            ], 503);
-        }
-
-        $validated = $request->validate([
-            'amount' => ['required', 'numeric', 'min:1'],
-            'reference' => ['nullable', 'string', 'max:200'],
-            'note' => ['nullable', 'string', 'max:1000'],
-            'withdrawn_at' => ['nullable', 'date', 'before_or_equal:now'],
-        ]);
-
-        $amount = round((float) $validated['amount'], 2);
-        $walletReceived = $this->commissionWalletReceived();
-        $alreadyWithdrawn = (float) DB::table('commission_withdrawals')->sum('amount');
-        $available = max(0, $walletReceived - $alreadyWithdrawn);
-
-        if ($amount > $available) {
-            throw ValidationException::withMessages([
-                'amount' => 'Withdrawal exceeds available commission balance of '.number_format($available).' UGX.',
-            ]);
-        }
-
-        $now = now();
-        $withdrawnAt = isset($validated['withdrawn_at'])
-            ? Carbon::parse($validated['withdrawn_at'])
-            : $now;
-
-        $withdrawalId = DB::table('commission_withdrawals')->insertGetId([
-            'amount' => $amount,
-            'reference' => $validated['reference'] ?? null,
-            'wallet_account' => $this->commissionWalletAccount() ?: null,
-            'note' => $validated['note'] ?? null,
-            'withdrawn_at' => $withdrawnAt,
-            'created_at' => $now,
-        ]);
-
-        $withdrawal = DB::table('commission_withdrawals')->where('id', $withdrawalId)->first();
-        $totalWithdrawn = $alreadyWithdrawn + $amount;
-
-        return response()->json([
-            'success' => true,
-            'withdrawal' => $this->serialiseCommissionWithdrawal($withdrawal),
-            'commission' => [
-                'wallet_received' => $walletReceived,
-                'total_paid' => $walletReceived,
-                'total_withdrawn' => $totalWithdrawn,
-                'available' => max(0, $walletReceived - $totalWithdrawn),
-                'current_total' => max(0, $walletReceived - $totalWithdrawn),
-            ],
-        ], 201);
     }
 
     public function retryCommission(Payment $payment): JsonResponse
