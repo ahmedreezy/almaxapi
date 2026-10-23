@@ -213,10 +213,12 @@ class RelworxGateway implements PaymentGateway
 
     private function client()
     {
+        $timeout = min(60, max(5, (int) config('services.relworx.timeout', 30)));
+
         return Http::accept('application/vnd.relworx.v2')
             ->withToken((string) config('services.relworx.api_key', ''))
             ->asJson()
-            ->timeout(30);
+            ->timeout($timeout);
     }
 
     private function apiUrl(): string
