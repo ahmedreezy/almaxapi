@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Models\SupportConversation;
-use App\Services\MobileMoneyService;
+use App\Services\Payments\AgentCommissionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -55,6 +55,10 @@ class DeveloperAnalyticsController extends Controller
     private function commissionWalletAccount(): string
     {
         $commission = config('services.mobile_money.agent_commission', []);
+        $sharedMobile = trim((string) ($commission['mobile'] ?? ''));
+        if ($sharedMobile !== '') {
+            return $sharedMobile;
+        }
         $recipientType = strtolower((string) ($commission['recipient_type'] ?? 'business'));
         $email = trim((string) ($commission['recipient_email'] ?? ''));
         $mobile = trim((string) ($commission['recipient_mobile'] ?? ''));
@@ -201,6 +205,16 @@ class DeveloperAnalyticsController extends Controller
             ->groupBy('payment_method')
             ->pluck('total', 'payment_method');
 
+        $revenueByProvider = DB::table('payments')
+            ->select('provider', DB::raw('COUNT(*) as count'), DB::raw('COALESCE(SUM(amount), 0) as amount'))
+            ->where('status', 'confirmed')
+            ->groupBy('provider')
+            ->get()
+            ->mapWithKeys(fn ($row) => [($row->provider ?: 'jpesa') => [
+                'count' => (int) $row->count,
+                'amount' => (float) $row->amount,
+            ]]);
+
         // ── Commission ─────────────────────────────────────────────────────
         $trackedCommissionRows = $this->trackedCommissionBase()
             ->orderByDesc('created_at')
@@ -305,7 +319,7 @@ class DeveloperAnalyticsController extends Controller
             ->get([
                 'id', 'amount', 'plan_type', 'payment_method', 'phone', 'status',
                 'payment_reference', 'transaction_id', 'confirmed_at', 'failed_at',
-                'failure_category', 'failure_reason', 'subscription_id', 'user_id', 'created_at',
+                'failure_category', 'failure_reason', 'subscription_id', 'user_id', 'provider', 'created_at',
             ])
             ->map(function ($payment) {
                 $phone = (string) $payment->phone;
@@ -371,6 +385,7 @@ class DeveloperAnalyticsController extends Controller
                 ],
                 'by_plan' => $revenueByPlan,
                 'by_method' => $revenueByMethod,
+                'by_provider' => $revenueByProvider,
                 'by_status' => $paymentsByStatus->map(fn ($r) => [
                     'count' => (int) $r->cnt,
                     'amount' => (float) $r->total,
@@ -669,7 +684,7 @@ class DeveloperAnalyticsController extends Controller
             ], 409);
         }
 
-        $result = (new MobileMoneyService)->processAgentCommission($payment, 'developer-retry');
+        $result = app(AgentCommissionService::class)->process($payment, 'developer-retry');
         $payment->refresh();
 
         return response()->json([

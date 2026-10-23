@@ -365,6 +365,56 @@ class MobileMoneyService
     }
 
     /**
+     * Provider-level JPesa payout used by the gateway abstraction.
+     * Database claiming/idempotency is handled by AgentCommissionService.
+     */
+    public function initiatePayout(int $amount, string $reference, string $description, string $mobile): array
+    {
+        $normalized = $this->normalizePhone($mobile);
+        if ($normalized === '') {
+            return ['success' => false, 'message' => 'Commission recipient mobile is not configured.'];
+        }
+
+        return $this->sendJpesaInternalTransfer($amount, $reference, $description, [
+            'field' => 'mobile',
+            'value' => $normalized,
+            'display' => $normalized,
+        ]);
+    }
+
+    public function initiateConfiguredPayout(int $amount, string $reference, string $description): array
+    {
+        $recipient = $this->agentCommissionRecipient();
+        if ($recipient['value'] === '') {
+            return ['success' => false, 'message' => 'JPesa commission recipient is not configured.'];
+        }
+
+        return $this->sendJpesaInternalTransfer($amount, $reference, $description, $recipient);
+    }
+
+    /** @return array{configured: bool, ready: bool, missing: array<int, string>, message: string} */
+    public function readiness(): array
+    {
+        $missing = [];
+        if ($this->apiUrl === '') {
+            $missing[] = 'JPESA_API_URL';
+        }
+        if ($this->apiKey === '') {
+            $missing[] = 'JPESA_API_KEY';
+        }
+        if ($this->callbackUrl === '') {
+            $missing[] = 'JPESA_CALLBACK_URL';
+        }
+
+        return [
+            'configured' => $missing === [],
+            'ready' => $missing === [],
+            'missing' => $missing,
+            'message' => $missing === [] ? 'JPesa is configured.' : 'JPesa configuration is incomplete.',
+        ];
+    }
+
+    /**
      * Send the configured agent's commission for a confirmed payment.
      *
      * The method first claims the payment row by setting

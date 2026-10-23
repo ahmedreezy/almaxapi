@@ -42,8 +42,9 @@ return [
         'webhook_secret' => env('MOBILE_MONEY_WEBHOOK_SECRET', ''),
         'callback_url' => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
         'agent_commission' => [
-            'enabled' => env('JPESA_AGENT_COMMISSION_ENABLED', false),
-            'ratio' => env('JPESA_AGENT_COMMISSION_RATIO', 0.2),
+            'enabled' => env('PAYMENT_AGENT_COMMISSION_ENABLED', env('JPESA_AGENT_COMMISSION_ENABLED', false)),
+            'ratio' => env('PAYMENT_AGENT_COMMISSION_RATIO', env('JPESA_AGENT_COMMISSION_RATIO', 0.2)),
+            'mobile' => env('PAYMENT_COMMISSION_RECIPIENT_MSISDN', env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', '')),
             'recipient_type' => env('JPESA_AGENT_COMMISSION_RECIPIENT_TYPE', 'business'),
             'recipient_email' => env('JPESA_AGENT_COMMISSION_RECIPIENT_EMAIL', ''),
             'recipient_mobile' => env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', ''),
@@ -51,6 +52,20 @@ return [
             'transfer_pt' => env('JPESA_AGENT_COMMISSION_TRANSFER_PT', 'gwallet'),
             'currency' => env('JPESA_AGENT_COMMISSION_CURRENCY', 'UGX'),
         ],
+    ],
+
+    'payment_gateway' => [
+        'default' => env('PAYMENT_GATEWAY_DEFAULT', 'jpesa'),
+        'currency' => env('PAYMENT_CURRENCY', 'UGX'),
+    ],
+
+    'relworx' => [
+        'api_url' => env('RELWORX_API_URL', 'https://payments.relworx.com/api'),
+        'api_key' => env('RELWORX_API_KEY', ''),
+        'account_no' => env('RELWORX_ACCOUNT_NO', ''),
+        'webhook_key' => env('RELWORX_WEBHOOK_KEY', ''),
+        'webhook_url' => env('RELWORX_WEBHOOK_URL', ''),
+        'webhook_tolerance' => env('RELWORX_WEBHOOK_TOLERANCE_SECONDS', 300),
     ],
 
     'payment_failure_alert' => [

@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\PackageReleaseController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\PaymentGatewayController;
 use App\Http\Controllers\Api\RecentWinController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\SupportAdminController;
@@ -51,6 +52,12 @@ Route::post('/analytics/developer/commission-withdrawals', [DeveloperAnalyticsCo
     ->middleware('auth.dev');
 Route::post('/analytics/developer/payments/{payment}/retry-commission', [DeveloperAnalyticsController::class, 'retryCommission'])
     ->middleware('auth.dev');
+
+Route::prefix('developer/payment-gateway')->middleware('auth.dev')->group(function () {
+    Route::get('/', [PaymentGatewayController::class, 'show']);
+    Route::post('/{provider}/check', [PaymentGatewayController::class, 'check']);
+    Route::patch('/', [PaymentGatewayController::class, 'update']);
+});
 
 // ─── GitHub deployment webhook (no auth, HMAC-verified inside controller) ──
 Route::post('/webhook/github', [WebhookController::class, 'github'])
@@ -182,6 +189,7 @@ Route::prefix('subscriptions')->group(function () {
 // ─── Payments ───────────────────────────────────────────────────────────────
 // No auth and no throttle: payment providers must be able to deliver callbacks reliably.
 Route::match(['get', 'post'], '/payments/webhook', [PaymentController::class, 'webhook']);
+Route::post('/payments/webhooks/relworx', [PaymentController::class, 'relworxWebhook']);
 
 Route::prefix('payments')->middleware('auth.admin')->group(function () {
     Route::get('/report', [PaymentController::class, 'report']);
