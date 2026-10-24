@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
+use App\Models\PayoutRequest;
 use App\Models\Subscription;
 use App\Services\MobileMoneyService;
 use App\Services\Payments\PaymentSettlementService;
+use App\Services\Payments\PayoutExecutionService;
 use App\Services\Payments\RelworxGateway;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -219,8 +221,11 @@ class PaymentController extends Controller
     }
 
     /** Relworx collection and payout webhook. */
-    public function relworxWebhook(Request $request, RelworxGateway $gateway): JsonResponse
-    {
+    public function relworxWebhook(
+        Request $request,
+        RelworxGateway $gateway,
+        PayoutExecutionService $payouts,
+    ): JsonResponse {
         $verification = $gateway->webhookVerification($request);
         if (! $verification['valid']) {
             Log::warning('Relworx webhook rejected.', [
@@ -239,6 +244,47 @@ class PaymentController extends Controller
         $status = (string) ($event['status'] ?? 'unknown');
         if ($reference === '' && $providerRequestId === '') {
             return response()->json(['message' => 'Missing payment identifier']);
+        }
+
+        $walletPayout = PayoutRequest::query()
+            ->where('provider', 'relworx')
+            ->where(function ($query) use ($reference, $providerRequestId) {
+                if ($reference !== '') {
+                    $query->where('reference', $reference);
+                }
+                if ($providerRequestId !== '') {
+                    $method = $reference !== '' ? 'orWhere' : 'where';
+                    $query->{$method}('provider_request_id', $providerRequestId);
+                }
+            })
+            ->first();
+
+        if ($walletPayout) {
+            if (in_array($walletPayout->status, ['completed', 'failed', 'cancelled'], true)) {
+                return response()->json(['message' => 'Already processed']);
+            }
+
+            $expectedCurrency = strtoupper((string) $walletPayout->currency);
+            $eventCurrency = (string) ($event['currency'] ?? '');
+            $eventAmount = $event['amount'] ?? null;
+            if (($eventCurrency !== '' && $eventCurrency !== $expectedCurrency)
+                || ($eventAmount !== null && abs((float) $eventAmount - (float) $walletPayout->amount) > 0.001)) {
+                Log::warning('Relworx webhook: payout details do not match.', [
+                    'payout_request_id' => $walletPayout->id,
+                    'expected_amount' => $walletPayout->amount,
+                    'received_amount' => $eventAmount,
+                    'expected_currency' => $expectedCurrency,
+                    'received_currency' => $eventCurrency,
+                ]);
+
+                return response()->json(['message' => 'Payout details do not match'], 422);
+            }
+
+            if (in_array($status, ['success', 'failed'], true)) {
+                $payouts->settle($walletPayout, $status, $event);
+            }
+
+            return response()->json(['message' => 'Processed']);
         }
 
         $payout = Payment::query()

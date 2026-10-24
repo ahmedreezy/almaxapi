@@ -4,6 +4,7 @@ namespace App\Services\Payments;
 
 use App\Contracts\PaymentGateway;
 use App\Models\Payment;
+use App\Models\PayoutRequest;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -158,6 +159,63 @@ class RelworxGateway implements PaymentGateway
             'amount' => round($amount, 2),
             'description' => $description,
         ], true);
+    }
+
+    public function queryPayout(PayoutRequest $payout): array
+    {
+        $references = array_values(array_unique(array_filter([
+            trim((string) $payout->reference),
+            trim((string) $payout->provider_request_id),
+        ])));
+        if ($references === []) {
+            return ['success' => false, 'status' => 'unknown', 'message' => 'Relworx payout reference is unavailable.'];
+        }
+
+        $last = ['success' => false, 'status' => 'unknown', 'message' => 'Relworx payout status is unavailable.'];
+        foreach ($references as $reference) {
+            try {
+                $response = $this->client()->get($this->apiUrl().'/mobile-money/check-request-status', [
+                    'internal_reference' => $reference,
+                    'account_no' => config('services.relworx.account_no'),
+                ]);
+                $json = $response->json() ?: [];
+                $status = $this->normalizeStatus((string) ($json['request_status'] ?? $json['status'] ?? 'unknown'));
+                $customerReference = trim((string) ($json['customer_reference'] ?? ''));
+                $referenceMatches = $customerReference === ''
+                    ? $reference === (string) $payout->reference
+                    : hash_equals((string) $payout->reference, $customerReference);
+
+                $last = [
+                    'success' => $response->successful() && $status === 'success' && $referenceMatches,
+                    'status' => $referenceMatches ? $status : 'unknown',
+                    'message' => $referenceMatches
+                        ? (string) ($json['message'] ?? 'Relworx payout status checked.')
+                        : 'Relworx returned a different payout reference.',
+                    'reference_matches' => $referenceMatches,
+                    'customer_reference' => $customerReference,
+                    'provider_request_id' => $json['internal_reference'] ?? null,
+                    'transaction_id' => $json['provider_transaction_id'] ?? null,
+                    'amount' => isset($json['amount']) ? (float) $json['amount'] : null,
+                    'currency' => strtoupper((string) ($json['currency'] ?? '')),
+                    'provider_fee_actual' => isset($json['charge']) ? (float) $json['charge'] : null,
+                    'completed_at' => $json['completed_at'] ?? null,
+                    'raw' => $json,
+                ];
+
+                if ($referenceMatches) {
+                    return $last;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Relworx payout status check failed.', [
+                    'payout_request_id' => $payout->id,
+                    'reference_type' => $reference === $payout->reference ? 'customer' : 'provider',
+                    'error' => $e->getMessage(),
+                ]);
+                $last = ['success' => false, 'status' => 'unknown', 'message' => 'Could not reach Relworx.'];
+            }
+        }
+
+        return $last;
     }
 
     public function walletBalance(): array

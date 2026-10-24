@@ -69,6 +69,8 @@ return [
         'collection_fee_rate' => env('RELWORX_COLLECTION_FEE_RATE', 0.03),
         'timeout' => env('RELWORX_REQUEST_TIMEOUT_SECONDS', 30),
         'payouts_enabled' => env('RELWORX_PAYOUTS_ENABLED', false),
+        'payout_min_amount' => env('RELWORX_PAYOUT_MIN_AMOUNT', 500),
+        'payout_max_amount' => env('RELWORX_PAYOUT_MAX_AMOUNT', 5000000),
     ],
 
     'payouts' => [

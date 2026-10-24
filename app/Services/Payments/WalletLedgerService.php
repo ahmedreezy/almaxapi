@@ -133,19 +133,24 @@ class WalletLedgerService
         ];
     }
 
-    public function createPayoutRequest(string $beneficiary, float $amount, int $actorId): PayoutRequest
-    {
+    public function createPayoutRequest(
+        string $beneficiary,
+        float $amount,
+        int $actorId,
+        ?string $clientToken = null,
+    ): PayoutRequest {
         if (! in_array($beneficiary, self::BENEFICIARIES, true)) {
             throw ValidationException::withMessages(['beneficiary' => 'Unsupported wallet beneficiary.']);
         }
 
-        if ((string) config('services.payouts.execution_mode', 'request_only') !== 'request_only') {
+        if (! in_array((string) config('services.payouts.execution_mode', 'request_only'), ['request_only', 'immediate'], true)) {
             throw ValidationException::withMessages(['amount' => 'The payout execution mode is unavailable.']);
         }
 
         $provider = 'relworx';
         $currency = strtoupper((string) config('services.payment_gateway.currency', 'UGX'));
         $amount = round($amount, 2);
+        $clientToken = trim((string) ($clientToken ?: Str::uuid()->toString()));
         $destination = $this->destination($beneficiary);
         if ($destination === '') {
             throw ValidationException::withMessages([
@@ -153,14 +158,35 @@ class WalletLedgerService
             ]);
         }
 
-        return DB::transaction(function () use ($beneficiary, $provider, $currency, $amount, $destination, $actorId) {
+        return DB::transaction(function () use ($beneficiary, $provider, $currency, $amount, $destination, $actorId, $clientToken) {
             $account = $this->account($beneficiary, $provider, $currency);
             $account = WalletAccount::query()->lockForUpdate()->findOrFail($account->id);
+            $existing = PayoutRequest::query()->where('client_token', $clientToken)->first();
+            if ($existing) {
+                if ($existing->beneficiary !== $beneficiary || (int) $existing->requested_by !== $actorId) {
+                    throw ValidationException::withMessages(['request_token' => 'This payout request token is already in use.']);
+                }
+
+                return $existing;
+            }
+
             $available = (float) WalletLedgerEntry::query()
                 ->where('wallet_account_id', $account->id)
                 ->sum('amount');
 
-            if ($amount < 1 || $amount > $available) {
+            $minimum = $this->minimumPayoutAmount();
+            $maximum = $this->maximumPayoutAmount();
+            if ($amount < $minimum) {
+                throw ValidationException::withMessages([
+                    'amount' => 'The minimum Relworx payout is '.number_format($minimum, 0).' '.$currency.'.',
+                ]);
+            }
+            if ($amount > $maximum) {
+                throw ValidationException::withMessages([
+                    'amount' => 'The maximum Relworx payout is '.number_format($maximum, 0).' '.$currency.'.',
+                ]);
+            }
+            if ($amount > $available) {
                 throw ValidationException::withMessages([
                     'amount' => 'Payout request exceeds the available Relworx balance of '.number_format(max(0, $available), 2).' '.$currency.'.',
                 ]);
@@ -168,6 +194,7 @@ class WalletLedgerService
 
             $request = PayoutRequest::query()->create([
                 'reference' => 'ALX-PAY-'.strtoupper(Str::random(12)),
+                'client_token' => $clientToken,
                 'wallet_account_id' => $account->id,
                 'beneficiary' => $beneficiary,
                 'provider' => $provider,
@@ -245,8 +272,25 @@ class WalletLedgerService
             'created_at' => $request->created_at,
             'cancelled_at' => $request->cancelled_at,
             'completed_at' => $request->completed_at,
-            'message' => $request->status === 'pending' ? 'Awaiting payout connection' : null,
+            'provider_fee' => $request->provider_fee_actual,
+            'message' => match ($request->status) {
+                'pending' => 'Awaiting payout submission.',
+                'processing' => $request->failure_reason ?: 'Relworx is processing this payout.',
+                'failed' => $request->failure_reason ?: 'Relworx payout failed and the funds were released.',
+                'completed' => 'Payout completed successfully.',
+                default => null,
+            },
         ];
+    }
+
+    public function minimumPayoutAmount(): float
+    {
+        return max(1, (float) config('services.relworx.payout_min_amount', 500));
+    }
+
+    public function maximumPayoutAmount(): float
+    {
+        return max($this->minimumPayoutAmount(), (float) config('services.relworx.payout_max_amount', 5000000));
     }
 
     private function destination(string $beneficiary): string
