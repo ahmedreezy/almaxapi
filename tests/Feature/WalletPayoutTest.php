@@ -214,8 +214,6 @@ class WalletPayoutTest extends TestCase
             'payment_method' => 'airtel',
             'phone' => $user->phone,
             'amount' => $amount,
-            'customer_charge_amount' => $amount,
-            'provider_net_amount' => $providerNet,
             'status' => 'active',
         ]);
 
@@ -223,6 +221,8 @@ class WalletPayoutTest extends TestCase
             'subscription_id' => $subscription->id,
             'user_id' => $user->id,
             'amount' => $amount,
+            'customer_charge_amount' => $amount,
+            'provider_net_amount' => $providerNet,
             'plan_type' => 'daily',
             'payment_method' => 'airtel',
             'phone' => $user->phone,
