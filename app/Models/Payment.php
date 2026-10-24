@@ -12,20 +12,27 @@ class Payment extends Model
     const CREATED_AT = 'created_at';
 
     protected $fillable = [
-        'subscription_id', 'user_id', 'amount',
+        'subscription_id', 'user_id', 'amount', 'customer_charge_amount',
+        'provider_fee_estimate', 'provider_fee_actual', 'provider_net_amount',
         'plan_type', 'payment_method', 'phone', 'status',
         'payment_reference', 'transaction_id',
+        'provider', 'provider_request_id',
         'confirmed_at',
         'failure_category', 'failure_reason', 'failed_at', 'failure_alerted_at',
         'agent_commission_amount', 'agent_commission_ratio',
         'agent_commission_status', 'agent_commission_reference',
         'agent_commission_transaction_id', 'agent_commission_recipient',
         'agent_commission_error', 'agent_commission_processed_at',
+        'agent_commission_provider', 'agent_commission_provider_request_id',
         'receipt_number',
     ];
 
     protected $casts = [
         'amount'                        => 'float',
+        'customer_charge_amount'        => 'float',
+        'provider_fee_estimate'         => 'float',
+        'provider_fee_actual'           => 'float',
+        'provider_net_amount'           => 'float',
         'agent_commission_amount'       => 'float',
         'agent_commission_ratio'        => 'float',
         'agent_commission_processed_at' => 'datetime',

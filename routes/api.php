@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\PackageReleaseController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\PaymentGatewayController;
 use App\Http\Controllers\Api\RecentWinController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\SupportAdminController;
@@ -19,6 +20,7 @@ use App\Http\Controllers\Api\TestimonialController;
 use App\Http\Controllers\Api\TwilioSupportWebhookController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\UserNotificationController;
+use App\Http\Controllers\Api\WalletController;
 use App\Http\Controllers\Api\WebhookController;
 use Illuminate\Support\Facades\Route;
 
@@ -47,10 +49,27 @@ Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'
     ->middleware('auth.dev');
 Route::get('/analytics/developer/support-insights', [DeveloperAnalyticsController::class, 'supportInsights'])
     ->middleware('auth.dev');
-Route::post('/analytics/developer/commission-withdrawals', [DeveloperAnalyticsController::class, 'storeCommissionWithdrawal'])
-    ->middleware('auth.dev');
 Route::post('/analytics/developer/payments/{payment}/retry-commission', [DeveloperAnalyticsController::class, 'retryCommission'])
     ->middleware('auth.dev');
+
+Route::prefix('developer/payment-gateway')->middleware('auth.dev')->group(function () {
+    Route::get('/', [PaymentGatewayController::class, 'show']);
+    Route::post('/{provider}/check', [PaymentGatewayController::class, 'check']);
+    Route::patch('/', [PaymentGatewayController::class, 'update']);
+});
+
+Route::prefix('developer')->middleware('auth.dev')->group(function () {
+    Route::get('/wallet', [WalletController::class, 'developerShow']);
+    Route::post('/payout-requests', [WalletController::class, 'developerStore']);
+    Route::post('/payout-requests/{payoutRequest}/cancel', [WalletController::class, 'developerCancel']);
+});
+
+Route::prefix('admin')->middleware('auth.admin')->group(function () {
+    Route::get('/wallet', [WalletController::class, 'adminShow']);
+    Route::get('/payout-requests', [WalletController::class, 'adminIndex']);
+    Route::post('/payout-requests', [WalletController::class, 'adminStore']);
+    Route::post('/payout-requests/{payoutRequest}/cancel', [WalletController::class, 'adminCancel']);
+});
 
 // ─── GitHub deployment webhook (no auth, HMAC-verified inside controller) ──
 Route::post('/webhook/github', [WebhookController::class, 'github'])
@@ -153,6 +172,8 @@ Route::prefix('user-notifications')->middleware('auth.user')->group(function () 
 
 // ─── Subscriptions ──────────────────────────────────────────────────────────
 Route::prefix('subscriptions')->group(function () {
+    Route::get('/payment-quote', [SubscriptionController::class, 'quote'])
+        ->middleware('throttle:api');
     Route::get('/me', [SubscriptionController::class, 'forMe'])
         ->middleware('auth.user');
 
@@ -182,6 +203,7 @@ Route::prefix('subscriptions')->group(function () {
 // ─── Payments ───────────────────────────────────────────────────────────────
 // No auth and no throttle: payment providers must be able to deliver callbacks reliably.
 Route::match(['get', 'post'], '/payments/webhook', [PaymentController::class, 'webhook']);
+Route::post('/payments/webhooks/relworx', [PaymentController::class, 'relworxWebhook']);
 
 Route::prefix('payments')->middleware('auth.admin')->group(function () {
     Route::get('/report', [PaymentController::class, 'report']);

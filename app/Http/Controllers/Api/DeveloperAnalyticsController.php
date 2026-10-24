@@ -5,13 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Models\SupportConversation;
-use App\Services\MobileMoneyService;
+use App\Services\Payments\AgentCommissionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\ValidationException;
 
 /**
  * Developer-only analytics dashboard data.
@@ -47,6 +46,7 @@ class DeveloperAnalyticsController extends Controller
         return match (strtolower(trim((string) $status))) {
             'sent', 'completed' => 'completed',
             'processing' => 'processing',
+            'accrued' => 'accrued',
             'failed', 'failure', 'error' => 'failed',
             default => 'pending',
         };
@@ -55,6 +55,10 @@ class DeveloperAnalyticsController extends Controller
     private function commissionWalletAccount(): string
     {
         $commission = config('services.mobile_money.agent_commission', []);
+        $sharedMobile = trim((string) ($commission['mobile'] ?? ''));
+        if ($sharedMobile !== '') {
+            return $sharedMobile;
+        }
         $recipientType = strtolower((string) ($commission['recipient_type'] ?? 'business'));
         $email = trim((string) ($commission['recipient_email'] ?? ''));
         $mobile = trim((string) ($commission['recipient_mobile'] ?? ''));
@@ -62,14 +66,6 @@ class DeveloperAnalyticsController extends Controller
         return $recipientType === 'mobile'
             ? ($mobile ?: $email)
             : ($email ?: $mobile);
-    }
-
-    private function commissionWalletReceived(): float
-    {
-        return (float) $this->trackedCommissionBase()
-            ->get(['agent_commission_amount', 'agent_commission_status'])
-            ->filter(fn ($row) => $this->normaliseCommissionStatus($row->agent_commission_status) === 'completed')
-            ->sum('agent_commission_amount');
     }
 
     private function applyConfirmationWindow($query, Carbon $start, ?Carbon $end = null)
@@ -201,6 +197,16 @@ class DeveloperAnalyticsController extends Controller
             ->groupBy('payment_method')
             ->pluck('total', 'payment_method');
 
+        $revenueByProvider = DB::table('payments')
+            ->select('provider', DB::raw('COUNT(*) as count'), DB::raw('COALESCE(SUM(amount), 0) as amount'))
+            ->where('status', 'confirmed')
+            ->groupBy('provider')
+            ->get()
+            ->mapWithKeys(fn ($row) => [($row->provider ?: 'jpesa') => [
+                'count' => (int) $row->count,
+                'amount' => (float) $row->amount,
+            ]]);
+
         // ── Commission ─────────────────────────────────────────────────────
         $trackedCommissionRows = $this->trackedCommissionBase()
             ->orderByDesc('created_at')
@@ -242,6 +248,7 @@ class DeveloperAnalyticsController extends Controller
         $commByStatus = collect([
             'completed' => ['count' => 0, 'amount' => 0.0],
             'processing' => ['count' => 0, 'amount' => 0.0],
+            'accrued' => ['count' => 0, 'amount' => 0.0],
             'pending' => ['count' => 0, 'amount' => 0.0],
             'failed' => ['count' => 0, 'amount' => 0.0],
         ])->merge($commByStatus);
@@ -305,7 +312,7 @@ class DeveloperAnalyticsController extends Controller
             ->get([
                 'id', 'amount', 'plan_type', 'payment_method', 'phone', 'status',
                 'payment_reference', 'transaction_id', 'confirmed_at', 'failed_at',
-                'failure_category', 'failure_reason', 'subscription_id', 'user_id', 'created_at',
+                'failure_category', 'failure_reason', 'subscription_id', 'user_id', 'provider', 'created_at',
             ])
             ->map(function ($payment) {
                 $phone = (string) $payment->phone;
@@ -318,8 +325,13 @@ class DeveloperAnalyticsController extends Controller
 
         // ── Charts (last 30 days) ──────────────────────────────────────────
         $sqlTimezone = str_replace("'", "''", $timezone);
-        $confirmationDateSql = "(COALESCE(confirmed_at, created_at) AT TIME ZONE '{$sqlTimezone}')::date";
-        $signupDateSql = "(created_at AT TIME ZONE '{$sqlTimezone}')::date";
+        if (DB::getDriverName() === 'sqlite') {
+            $confirmationDateSql = 'date(COALESCE(confirmed_at, created_at))';
+            $signupDateSql = 'date(created_at)';
+        } else {
+            $confirmationDateSql = "(COALESCE(confirmed_at, created_at) AT TIME ZONE '{$sqlTimezone}')::date";
+            $signupDateSql = "(created_at AT TIME ZONE '{$sqlTimezone}')::date";
+        }
         $revenueChart = DB::table('payments')
             ->select(
                 DB::raw("{$confirmationDateSql} as date"),
@@ -371,6 +383,7 @@ class DeveloperAnalyticsController extends Controller
                 ],
                 'by_plan' => $revenueByPlan,
                 'by_method' => $revenueByMethod,
+                'by_provider' => $revenueByProvider,
                 'by_status' => $paymentsByStatus->map(fn ($r) => [
                     'count' => (int) $r->cnt,
                     'amount' => (float) $r->total,
@@ -592,63 +605,6 @@ class DeveloperAnalyticsController extends Controller
         ]);
     }
 
-    public function storeCommissionWithdrawal(Request $request): JsonResponse
-    {
-        if (! Schema::hasTable('commission_withdrawals')) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Commission withdrawals table is not ready. Run database migrations first.',
-            ], 503);
-        }
-
-        $validated = $request->validate([
-            'amount' => ['required', 'numeric', 'min:1'],
-            'reference' => ['nullable', 'string', 'max:200'],
-            'note' => ['nullable', 'string', 'max:1000'],
-            'withdrawn_at' => ['nullable', 'date', 'before_or_equal:now'],
-        ]);
-
-        $amount = round((float) $validated['amount'], 2);
-        $walletReceived = $this->commissionWalletReceived();
-        $alreadyWithdrawn = (float) DB::table('commission_withdrawals')->sum('amount');
-        $available = max(0, $walletReceived - $alreadyWithdrawn);
-
-        if ($amount > $available) {
-            throw ValidationException::withMessages([
-                'amount' => 'Withdrawal exceeds available commission balance of '.number_format($available).' UGX.',
-            ]);
-        }
-
-        $now = now();
-        $withdrawnAt = isset($validated['withdrawn_at'])
-            ? Carbon::parse($validated['withdrawn_at'])
-            : $now;
-
-        $withdrawalId = DB::table('commission_withdrawals')->insertGetId([
-            'amount' => $amount,
-            'reference' => $validated['reference'] ?? null,
-            'wallet_account' => $this->commissionWalletAccount() ?: null,
-            'note' => $validated['note'] ?? null,
-            'withdrawn_at' => $withdrawnAt,
-            'created_at' => $now,
-        ]);
-
-        $withdrawal = DB::table('commission_withdrawals')->where('id', $withdrawalId)->first();
-        $totalWithdrawn = $alreadyWithdrawn + $amount;
-
-        return response()->json([
-            'success' => true,
-            'withdrawal' => $this->serialiseCommissionWithdrawal($withdrawal),
-            'commission' => [
-                'wallet_received' => $walletReceived,
-                'total_paid' => $walletReceived,
-                'total_withdrawn' => $totalWithdrawn,
-                'available' => max(0, $walletReceived - $totalWithdrawn),
-                'current_total' => max(0, $walletReceived - $totalWithdrawn),
-            ],
-        ], 201);
-    }
-
     public function retryCommission(Payment $payment): JsonResponse
     {
         $payment->refresh();
@@ -669,7 +625,7 @@ class DeveloperAnalyticsController extends Controller
             ], 409);
         }
 
-        $result = (new MobileMoneyService)->processAgentCommission($payment, 'developer-retry');
+        $result = app(AgentCommissionService::class)->process($payment, 'developer-retry');
         $payment->refresh();
 
         return response()->json([

@@ -42,8 +42,9 @@ return [
         'webhook_secret' => env('MOBILE_MONEY_WEBHOOK_SECRET', ''),
         'callback_url' => env('MOBILE_MONEY_CALLBACK_URL', env('JPESA_CALLBACK_URL', '')),
         'agent_commission' => [
-            'enabled' => env('JPESA_AGENT_COMMISSION_ENABLED', false),
-            'ratio' => env('JPESA_AGENT_COMMISSION_RATIO', 0.2),
+            'enabled' => env('PAYMENT_AGENT_COMMISSION_ENABLED', env('JPESA_AGENT_COMMISSION_ENABLED', false)),
+            'ratio' => env('PAYMENT_AGENT_COMMISSION_RATIO', env('JPESA_AGENT_COMMISSION_RATIO', 0.2)),
+            'mobile' => env('PAYMENT_COMMISSION_RECIPIENT_MSISDN', env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', '')),
             'recipient_type' => env('JPESA_AGENT_COMMISSION_RECIPIENT_TYPE', 'business'),
             'recipient_email' => env('JPESA_AGENT_COMMISSION_RECIPIENT_EMAIL', ''),
             'recipient_mobile' => env('JPESA_AGENT_COMMISSION_RECIPIENT_MOBILE', ''),
@@ -51,6 +52,31 @@ return [
             'transfer_pt' => env('JPESA_AGENT_COMMISSION_TRANSFER_PT', 'gwallet'),
             'currency' => env('JPESA_AGENT_COMMISSION_CURRENCY', 'UGX'),
         ],
+    ],
+
+    'payment_gateway' => [
+        'default' => env('PAYMENT_GATEWAY_DEFAULT', 'jpesa'),
+        'currency' => env('PAYMENT_CURRENCY', 'UGX'),
+    ],
+
+    'relworx' => [
+        'api_url' => env('RELWORX_API_URL', 'https://payments.relworx.com/api'),
+        'api_key' => env('RELWORX_API_KEY', ''),
+        'account_no' => env('RELWORX_ACCOUNT_NO', ''),
+        'webhook_key' => env('RELWORX_WEBHOOK_KEY', env('RELWORX_WEBHOOK_SIGNING_KEY', '')),
+        'webhook_url' => env('RELWORX_WEBHOOK_URL', ''),
+        'webhook_tolerance' => env('RELWORX_WEBHOOK_TOLERANCE_SECONDS', 300),
+        'collection_fee_rate' => env('RELWORX_COLLECTION_FEE_RATE', 0.03),
+        'timeout' => env('RELWORX_REQUEST_TIMEOUT_SECONDS', 30),
+        'payouts_enabled' => env('RELWORX_PAYOUTS_ENABLED', false),
+        'payout_min_amount' => env('RELWORX_PAYOUT_MIN_AMOUNT', 500),
+        'payout_max_amount' => env('RELWORX_PAYOUT_MAX_AMOUNT', 5000000),
+    ],
+
+    'payouts' => [
+        'execution_mode' => env('PAYOUT_EXECUTION_MODE', 'request_only'),
+        'owner_msisdn' => env('PAYMENT_OWNER_PAYOUT_MSISDN', ''),
+        'developer_msisdn' => env('PAYMENT_DEVELOPER_PAYOUT_MSISDN', env('PAYMENT_COMMISSION_RECIPIENT_MSISDN', '')),
     ],
 
     'payment_failure_alert' => [
