@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Payments\AgentCommissionService;
+use App\Services\Payments\RelworxGateway;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -162,30 +163,47 @@ class WalletPayoutTest extends TestCase
         ]);
     }
 
-    public function test_admin_sees_live_relworx_cash_and_separate_developer_liability(): void
+    public function test_admin_wallet_exposes_only_owner_balance_and_payout_data(): void
     {
-        Http::fake([
-            '*/mobile-money/check-wallet-balance*' => Http::response(['success' => true, 'balance' => 3750]),
-        ]);
-        Config::set('services.relworx', [
-            'api_url' => 'https://payments.relworx.com/api',
-            'api_key' => 'test-key',
-            'account_no' => 'REL-TEST',
-            'webhook_key' => 'webhook-key',
-            'webhook_url' => 'https://example.test/api/payments/webhooks/relworx',
-            'timeout' => 10,
-            'payouts_enabled' => false,
-        ]);
+        Http::fake();
         app(AgentCommissionService::class)->process($this->confirmedPayment('relworx', 5000), 'test');
 
         $this->withHeaders($this->createAdmin('wallet-owner')['headers'])
             ->getJson('/api/admin/wallet')
             ->assertOk()
-            ->assertJsonPath('relworx_wallet.balance', 3750)
-            ->assertJsonPath('today_revenue', 5000)
             ->assertJsonPath('wallet.provider', 'relworx')
             ->assertJsonPath('wallet.available', 4000)
-            ->assertJsonPath('developer_liability.available', 1000);
+            ->assertJsonMissingPath('today_revenue')
+            ->assertJsonMissingPath('relworx_wallet')
+            ->assertJsonMissingPath('developer_liability')
+            ->assertJsonStructure([
+                'wallet',
+                'destination_configured',
+                'execution_mode',
+                'requests',
+            ]);
+        Http::assertNothingSent();
+    }
+
+    public function test_relworx_payout_probe_reports_disabled_without_sending_money(): void
+    {
+        Http::fake();
+        Config::set('services.relworx.payouts_enabled', false);
+
+        $gateway = app(RelworxGateway::class);
+        $result = $gateway->initiatePayout(
+            1,
+            'ALX-PAYOUT-PROBE',
+            'Technical payout capability probe',
+            '+256700000111',
+        );
+
+        $this->assertFalse($gateway->capabilities()['payouts']);
+        $this->assertFalse($result['success']);
+        $this->assertFalse($result['pending']);
+        $this->assertFalse($result['final']);
+        $this->assertSame('Relworx API payouts are not enabled for this account.', $result['message']);
+        Http::assertNothingSent();
     }
 
     public function test_roles_cannot_cross_wallet_boundaries(): void

@@ -3,9 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Payment;
 use App\Models\PayoutRequest;
-use App\Services\Payments\RelworxGateway;
 use App\Services\Payments\WalletLedgerService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,7 +12,6 @@ class WalletController extends Controller
 {
     public function __construct(
         private readonly WalletLedgerService $wallets,
-        private readonly RelworxGateway $relworx,
     ) {}
 
     public function developerShow(Request $request): JsonResponse
@@ -54,9 +51,6 @@ class WalletController extends Controller
     {
         return response()->json([
             'wallet' => $this->wallets->providerSummary('owner', 'relworx'),
-            'today_revenue' => $this->relworxRevenueToday(),
-            'developer_liability' => $this->wallets->providerSummary('developer', 'relworx'),
-            'relworx_wallet' => $this->relworx->walletBalance(),
             'destination_configured' => trim((string) config('services.payouts.owner_msisdn', '')) !== '',
             'execution_mode' => config('services.payouts.execution_mode', 'request_only'),
             'requests' => $this->requests(),
@@ -104,14 +98,5 @@ class WalletController extends Controller
             ->map(fn (PayoutRequest $item) => $this->wallets->serialiseRequest($item))
             ->values()
             ->all();
-    }
-
-    private function relworxRevenueToday(): float
-    {
-        return round((float) Payment::query()
-            ->where('status', 'confirmed')
-            ->where('provider', 'relworx')
-            ->whereBetween('confirmed_at', [now()->startOfDay(), now()->endOfDay()])
-            ->sum('amount'), 2);
     }
 }
