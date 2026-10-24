@@ -66,6 +66,7 @@ return [
         'webhook_key' => env('RELWORX_WEBHOOK_KEY', env('RELWORX_WEBHOOK_SIGNING_KEY', '')),
         'webhook_url' => env('RELWORX_WEBHOOK_URL', ''),
         'webhook_tolerance' => env('RELWORX_WEBHOOK_TOLERANCE_SECONDS', 300),
+        'collection_fee_rate' => env('RELWORX_COLLECTION_FEE_RATE', 0.03),
         'timeout' => env('RELWORX_REQUEST_TIMEOUT_SECONDS', 30),
         'payouts_enabled' => env('RELWORX_PAYOUTS_ENABLED', false),
     ],

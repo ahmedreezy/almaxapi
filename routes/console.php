@@ -1,6 +1,7 @@
 <?php
 
 use App\Console\Commands\CleanupDeadlineSubscriptions;
+use App\Console\Commands\ReconcileRelworxPayments;
 use App\Models\AdminUser;
 use App\Models\SupportMessage;
 use App\Services\PaymentFailureAlertService;
@@ -76,6 +77,9 @@ Artisan::command('payments:test-alert-email', function () {
 // Ensure crontab on production server contains:
 //   * * * * * cd /path/to/almaxapi && php artisan schedule:run >> /dev/null 2>&1
 Schedule::command(CleanupDeadlineSubscriptions::class)->hourly();
+Schedule::command(ReconcileRelworxPayments::class)
+    ->everyMinute()
+    ->withoutOverlapping();
 Schedule::call(function () {
     app(PaymentFailureAlertService::class)->sendPendingBatchIfReady();
 })->everyFiveMinutes()->name('send-payment-failure-alerts')->withoutOverlapping();

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AdminUser;
+use App\Models\Payment;
 use App\Models\PaymentGatewaySetting;
 use App\Models\PaymentGatewaySwitch;
 use App\Services\Payments\RelworxGateway;
@@ -109,6 +110,7 @@ class PaymentGatewayTest extends TestCase
 
         $gateway = app(RelworxGateway::class);
         $this->assertTrue($gateway->verifyWebhook($request));
+        $this->assertSame('valid', $gateway->webhookVerification($request)['reason']);
 
         $stale = $timestamp - 1000;
         $staleRequest = Request::create(
@@ -120,6 +122,39 @@ class PaymentGatewayTest extends TestCase
             ['HTTP_RELWORX_SIGNATURE' => 't='.$stale.',v='.$this->relworxSignature($payload, $stale)]
         );
         $this->assertFalse($gateway->verifyWebhook($staleRequest));
+        $this->assertSame('stale_timestamp', $gateway->webhookVerification($staleRequest)['reason']);
+
+        Config::set('services.relworx.webhook_url', 'https://www.almaxpredictions.com/api/payments/webhooks/relworx');
+        $this->assertSame('signature_mismatch', $gateway->webhookVerification($request)['reason']);
+    }
+
+    public function test_relworx_status_uses_customer_reference_before_stale_internal_reference(): void
+    {
+        $this->configureRelworx();
+        $payment = new Payment([
+            'payment_reference' => 'ALX-current-customer-reference',
+            'provider_request_id' => 'stale-failed-internal-reference',
+        ]);
+        $payment->id = 99;
+
+        Http::fake(fn () => Http::response([
+            'request_status' => 'success',
+            'customer_reference' => 'ALX-current-customer-reference',
+            'internal_reference' => 'current-success-internal-reference',
+            'provider_transaction_id' => '44483745949',
+            'amount' => 1000,
+            'charge' => 30,
+            'currency' => 'UGX',
+            'completed_at' => '2026-10-24T07:22:03.009+03:00',
+        ]));
+
+        $result = app(RelworxGateway::class)->queryCollection($payment);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('current-success-internal-reference', $result['provider_request_id']);
+        $this->assertSame(30.0, $result['provider_fee_actual']);
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request) => $request->data()['internal_reference'] === 'ALX-current-customer-reference');
     }
 
     private function configureRelworx(): void
@@ -129,7 +164,7 @@ class PaymentGatewayTest extends TestCase
             'api_key' => 'relworx-test-key',
             'account_no' => 'RELTEST123',
             'webhook_key' => 'webhook-test-key',
-            'webhook_url' => 'https://www.almaxpredictions.com/api/payments/webhooks/relworx',
+            'webhook_url' => 'https://almaxpredictions.com/api/payments/webhooks/relworx',
             'webhook_tolerance' => 300,
         ]);
         Config::set('services.mobile_money.agent_commission.mobile', '+256700000001');

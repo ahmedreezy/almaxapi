@@ -83,32 +83,60 @@ class RelworxGateway implements PaymentGateway
 
     public function queryCollection(Payment $payment, ?string $manualReference = null): array
     {
-        $reference = $payment->provider_request_id ?: $payment->payment_reference;
-        if ($reference === '') {
+        $references = array_values(array_unique(array_filter([
+            trim((string) $manualReference),
+            trim((string) $payment->payment_reference),
+            trim((string) $payment->provider_request_id),
+        ])));
+        if ($references === []) {
             return ['success' => false, 'status' => 'unknown', 'message' => 'Relworx request reference is unavailable.'];
         }
 
-        try {
-            $response = $this->client()->get($this->apiUrl().'/mobile-money/check-request-status', [
-                'internal_reference' => $reference,
-                'account_no' => config('services.relworx.account_no'),
-            ]);
-            $json = $response->json() ?: [];
-            $status = $this->normalizeStatus((string) ($json['request_status'] ?? $json['status'] ?? 'unknown'));
+        $last = ['success' => false, 'status' => 'unknown', 'message' => 'Relworx status is unavailable.'];
+        foreach ($references as $reference) {
+            try {
+                $response = $this->client()->get($this->apiUrl().'/mobile-money/check-request-status', [
+                    'internal_reference' => $reference,
+                    'account_no' => config('services.relworx.account_no'),
+                ]);
+                $json = $response->json() ?: [];
+                $status = $this->normalizeStatus((string) ($json['request_status'] ?? $json['status'] ?? 'unknown'));
+                $customerReference = trim((string) ($json['customer_reference'] ?? ''));
+                $referenceMatches = $customerReference === ''
+                    ? $reference === (string) $payment->payment_reference
+                    : hash_equals((string) $payment->payment_reference, $customerReference);
 
-            return [
-                'success' => $response->successful() && $status === 'success',
-                'status' => $status,
-                'message' => (string) ($json['message'] ?? 'Relworx status checked.'),
-                'provider_request_id' => $json['internal_reference'] ?? $reference,
-                'transaction_id' => $json['provider_transaction_id'] ?? null,
-                'raw' => $json,
-            ];
-        } catch (\Throwable $e) {
-            Log::warning('Relworx collection status check failed.', ['payment_id' => $payment->id, 'error' => $e->getMessage()]);
+                $last = [
+                    'success' => $response->successful() && $status === 'success' && $referenceMatches,
+                    'status' => $referenceMatches ? $status : 'unknown',
+                    'message' => $referenceMatches
+                        ? (string) ($json['message'] ?? 'Relworx status checked.')
+                        : 'Relworx returned a different customer reference.',
+                    'reference_matches' => $referenceMatches,
+                    'customer_reference' => $customerReference,
+                    'provider_request_id' => $json['internal_reference'] ?? null,
+                    'transaction_id' => $json['provider_transaction_id'] ?? null,
+                    'amount' => isset($json['amount']) ? (float) $json['amount'] : null,
+                    'currency' => strtoupper((string) ($json['currency'] ?? '')),
+                    'provider_fee_actual' => isset($json['charge']) ? (float) $json['charge'] : null,
+                    'completed_at' => $json['completed_at'] ?? null,
+                    'raw' => $json,
+                ];
 
-            return ['success' => false, 'status' => 'unknown', 'message' => 'Could not reach Relworx.'];
+                if ($referenceMatches) {
+                    return $last;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Relworx collection status check failed.', [
+                    'payment_id' => $payment->id,
+                    'reference_type' => $reference === $payment->payment_reference ? 'customer' : 'provider',
+                    'error' => $e->getMessage(),
+                ]);
+                $last = ['success' => false, 'status' => 'unknown', 'message' => 'Could not reach Relworx.'];
+            }
         }
+
+        return $last;
     }
 
     public function initiatePayout(int $amount, string $reference, string $description, string $mobile): array
@@ -175,6 +203,11 @@ class RelworxGateway implements PaymentGateway
 
     public function verifyWebhook(Request $request): bool
     {
+        return $this->webhookVerification($request)['valid'];
+    }
+
+    public function webhookVerification(Request $request): array
+    {
         $header = (string) $request->header('Relworx-Signature', '');
         $parts = [];
         foreach (explode(',', $header) as $item) {
@@ -187,8 +220,12 @@ class RelworxGateway implements PaymentGateway
         $timestamp = isset($parts['t']) && ctype_digit((string) $parts['t']) ? (int) $parts['t'] : 0;
         $signature = (string) ($parts['v'] ?? '');
         $tolerance = max(30, (int) config('services.relworx.webhook_tolerance', 300));
-        if ($timestamp < 1 || $signature === '' || abs(time() - $timestamp) > $tolerance) {
-            return false;
+        if ($timestamp < 1 || $signature === '') {
+            return ['valid' => false, 'reason' => 'missing_signature_parts', 'timestamp_age' => null];
+        }
+        $timestampAge = abs(time() - $timestamp);
+        if ($timestampAge > $tolerance) {
+            return ['valid' => false, 'reason' => 'stale_timestamp', 'timestamp_age' => $timestampAge];
         }
 
         $params = [
@@ -205,7 +242,13 @@ class RelworxGateway implements PaymentGateway
         $binary = hash_hmac('sha256', $signed, (string) config('services.relworx.webhook_key', ''), true);
         $hex = bin2hex($binary);
 
-        return hash_equals($hex, $signature) || hash_equals(base64_encode($binary), $signature);
+        $valid = hash_equals($hex, $signature) || hash_equals(base64_encode($binary), $signature);
+
+        return [
+            'valid' => $valid,
+            'reason' => $valid ? 'valid' : 'signature_mismatch',
+            'timestamp_age' => $timestampAge,
+        ];
     }
 
     public function parseWebhook(Request $request): array
@@ -217,6 +260,8 @@ class RelworxGateway implements PaymentGateway
             'status' => $this->normalizeStatus((string) $request->input('status', 'unknown')),
             'message' => (string) $request->input('message', ''),
             'amount' => $request->input('amount'),
+            'provider_fee_actual' => $request->input('charge'),
+            'completed_at' => $request->input('completed_at'),
             'currency' => strtoupper((string) $request->input('currency', '')),
         ];
     }

@@ -12,7 +12,8 @@ class Payment extends Model
     const CREATED_AT = 'created_at';
 
     protected $fillable = [
-        'subscription_id', 'user_id', 'amount',
+        'subscription_id', 'user_id', 'amount', 'customer_charge_amount',
+        'provider_fee_estimate', 'provider_fee_actual', 'provider_net_amount',
         'plan_type', 'payment_method', 'phone', 'status',
         'payment_reference', 'transaction_id',
         'provider', 'provider_request_id',
@@ -28,6 +29,10 @@ class Payment extends Model
 
     protected $casts = [
         'amount'                        => 'float',
+        'customer_charge_amount'        => 'float',
+        'provider_fee_estimate'         => 'float',
+        'provider_fee_actual'           => 'float',
+        'provider_net_amount'           => 'float',
         'agent_commission_amount'       => 'float',
         'agent_commission_ratio'        => 'float',
         'agent_commission_processed_at' => 'datetime',

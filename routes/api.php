@@ -172,6 +172,8 @@ Route::prefix('user-notifications')->middleware('auth.user')->group(function () 
 
 // ─── Subscriptions ──────────────────────────────────────────────────────────
 Route::prefix('subscriptions')->group(function () {
+    Route::get('/payment-quote', [SubscriptionController::class, 'quote'])
+        ->middleware('throttle:api');
     Route::get('/me', [SubscriptionController::class, 'forMe'])
         ->middleware('auth.user');
 

@@ -10,6 +10,8 @@ use App\Models\User;
 use App\Services\PaymentFailureAlertService;
 use App\Services\Payments\AgentCommissionService;
 use App\Services\Payments\PaymentGatewayManager;
+use App\Services\Payments\PaymentPricingService;
+use App\Services\Payments\PaymentSettlementService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -26,6 +28,20 @@ use Illuminate\Support\Str;
  */
 class SubscriptionController extends Controller
 {
+    /** Public: quote the server-controlled price for the currently active gateway. */
+    public function quote(Request $request): JsonResponse
+    {
+        $data = $request->validate(['groupId' => ['required', 'integer', 'exists:groups,id']]);
+        $group = Group::findOrFail($data['groupId']);
+        if (! $group->isPurchasable()) {
+            return response()->json(['message' => 'This package is currently unavailable.'], 422);
+        }
+
+        $provider = app(PaymentGatewayManager::class)->activeName();
+
+        return response()->json(app(PaymentPricingService::class)->quote($group->effectivePrice(), $provider));
+    }
+
     /** Admin: list all subscriptions with auto-expiry updates */
     public function index(): JsonResponse
     {
@@ -63,7 +79,7 @@ class SubscriptionController extends Controller
     public function forUser(int $userId): JsonResponse
     {
         $subs = Subscription::where('user_id', $userId)
-            ->with(['group'])
+            ->with(['group', 'payment'])
             ->orderByDesc('created_at')
             ->get()
             ->map(function (Subscription $sub) {
@@ -138,11 +154,19 @@ class SubscriptionController extends Controller
             ->first();
 
         if ($existingPending) {
+            $existingPayment = $existingPending->payment;
             return response()->json([
                 'message' => 'A payment request is already in progress for this package. Please approve the existing prompt or wait a moment before retrying.',
                 'existingSubscriptionId' => $existingPending->id,
                 'paymentReference' => $existingPending->payment_reference,
                 'paymentProvider' => $existingPending->payment?->provider ?? 'jpesa',
+                'quote' => $existingPayment ? [
+                    'baseAmount' => (float) $existingPayment->amount,
+                    'providerFee' => (float) ($existingPayment->provider_fee_estimate ?? 0),
+                    'totalCharge' => (float) ($existingPayment->customer_charge_amount ?? $existingPayment->amount),
+                    'currency' => strtoupper((string) config('services.payment_gateway.currency', 'UGX')),
+                    'provider' => $existingPayment->provider ?? 'jpesa',
+                ] : null,
                 'status' => $existingPending->status,
             ], 409);
         }
@@ -193,8 +217,9 @@ class SubscriptionController extends Controller
 
         $gatewayManager = app(PaymentGatewayManager::class);
         $provider = $gatewayManager->activeName();
+        $quote = app(PaymentPricingService::class)->quote((float) $effectiveAmount, $provider);
 
-        [$sub, $payment] = DB::transaction(function () use ($data, $group, $reference, $effectiveAmount, $provider) {
+        [$sub, $payment] = DB::transaction(function () use ($data, $group, $reference, $effectiveAmount, $provider, $quote) {
             $sub = Subscription::create([
                 'user_id' => $data['userId'],
                 'group_id' => $group->id,
@@ -211,6 +236,8 @@ class SubscriptionController extends Controller
                 'subscription_id' => $sub->id,
                 'user_id' => $data['userId'],
                 'amount' => $effectiveAmount,
+                'customer_charge_amount' => $quote['totalCharge'],
+                'provider_fee_estimate' => $quote['providerFee'],
                 'plan_type' => $group->plan_type,
                 'payment_method' => $data['paymentMethod'],
                 'phone' => $data['phone'],
@@ -224,7 +251,7 @@ class SubscriptionController extends Controller
 
         $pushResult = $gatewayManager->gateway($provider)->initiateCollection(
             $data['phone'],
-            $effectiveAmount,
+            $quote['totalCharge'],
             $reference,
             $data['paymentMethod']
         );
@@ -254,6 +281,7 @@ class SubscriptionController extends Controller
             'subscription' => $sub->fresh()->load(['payment', 'group']),
             'paymentReference' => $reference,
             'pushResult' => $pushResult,
+            'quote' => $quote,
         ], 201);
     }
 
@@ -289,11 +317,14 @@ class SubscriptionController extends Controller
             return;
         }
 
-        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment);
+        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment, $payment->payment_reference);
         if (($result['status'] ?? 'unknown') === 'failed') {
-            $sub->update(['status' => 'failed']);
-            app(PaymentFailureAlertService::class)->record(
-                $payment,
+            app(PaymentSettlementService::class)->apply(
+                $sub,
+                false,
+                $result['transaction_id'] ?? null,
+                'provider-query',
+                $this->providerSettlementData($result),
                 'provider',
                 (string) ($result['message'] ?? 'Payment provider reported a failed transaction.')
             );
@@ -305,38 +336,18 @@ class SubscriptionController extends Controller
             return;
         }
 
-        $txnId = $result['transaction_id'] ?? $payment->transaction_id ?? $payment->provider_request_id;
+        if (! $this->providerResultMatchesPayment($payment, $result)) {
+            Log::warning('Provider query returned mismatched payment details.', ['payment_id' => $payment->id]);
+            return;
+        }
 
-        $now = now();
-        $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
-        $group = $sub->group;
-        $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
-        $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
-
-        DB::transaction(function () use ($sub, $now, $expiresAt, $betslipLink, $betslipCode, $txnId) {
-            $sub->update([
-                'status' => 'active',
-                'started_at' => $now,
-                'expires_at' => $expiresAt,
-                'betslip_link' => $betslipLink,
-                'betslip_code' => $betslipCode,
-            ]);
-
-            if ($sub->payment) {
-                $sub->payment->update([
-                    'status' => 'confirmed',
-                    'confirmed_at' => $sub->payment->confirmed_at ?: $now,
-                    'transaction_id' => $txnId,
-                ]);
-            }
-        });
-
-        Log::info('Subscription activated during payment-status polling', [
-            'subscription_id' => $sub->id,
-            'txn_id' => $txnId,
-        ]);
-
-        $this->processAgentCommissionSafely($sub, 'provider-query');
+        app(PaymentSettlementService::class)->apply(
+            $sub,
+            true,
+            $result['transaction_id'] ?? $payment->transaction_id,
+            'provider-query',
+            $this->providerSettlementData($result)
+        );
     }
 
     /** Normalise a Subscription model to a camelCase array for API responses. */
@@ -359,6 +370,9 @@ class SubscriptionController extends Controller
             'paymentReference' => $sub->payment_reference,
             'phone' => $sub->phone,
             'amount' => $sub->amount,
+            'baseAmount' => (float) $sub->amount,
+            'providerFee' => (float) ($sub->payment?->provider_fee_estimate ?? 0),
+            'totalCharge' => (float) ($sub->payment?->customer_charge_amount ?? $sub->amount),
             'betslipLink' => $includeBetslip ? $betslipLink : '',
             'betslipCode' => $includeBetslip ? $betslipCode : '',
             'packagePhoto' => $includeBetslip ? ($group?->photo_url ?? '') : '',
@@ -502,41 +516,22 @@ class SubscriptionController extends Controller
             ], 422);
         }
 
-        // Valid — activate the subscription
-        $now = now();
-        $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
-        $group = $sub->group;
-        $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
-        $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
-
-        $sub->update([
-            'status' => 'active',
-            'started_at' => $now,
-            'expires_at' => $expiresAt,
-            'betslip_link' => $betslipLink,
-            'betslip_code' => $betslipCode,
-        ]);
-
-        if ($sub->payment) {
-            $sub->payment->update([
-                'status' => 'confirmed',
-                'confirmed_at' => $sub->payment->confirmed_at ?: $now,
-                'transaction_id' => $result['transaction_id'] ?? $txnId,
-                'provider_request_id' => $result['provider_request_id'] ?? $sub->payment->provider_request_id,
-            ]);
+        if (! $this->providerResultMatchesPayment($payment, $result)) {
+            return response()->json(['error' => 'Provider payment details did not match this subscription.', 'verified' => false], 422);
         }
 
-        Log::info('Subscription activated via user-submitted transaction ID', [
-            'subscription_id' => $sub->id,
-            'txn_id' => $txnId,
-        ]);
-
-        $this->processAgentCommissionSafely($sub, 'user-submitted-transaction');
+        $sub = app(PaymentSettlementService::class)->apply(
+            $sub,
+            true,
+            $result['transaction_id'] ?? $txnId,
+            'user-submitted-transaction',
+            $this->providerSettlementData($result)
+        );
 
         return response()->json([
             'verified' => true,
             'message' => 'Payment verified! Your subscription is now active.',
-            'subscription' => $this->formatSub($sub->fresh()->load(['group']), true),
+            'subscription' => $this->formatSub($sub->fresh()->load(['payment', 'group']), true),
         ]);
     }
 
@@ -556,6 +551,33 @@ class SubscriptionController extends Controller
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private function providerResultMatchesPayment(Payment $payment, array $result): bool
+    {
+        if (($result['reference_matches'] ?? true) !== true) {
+            return false;
+        }
+        $currency = strtoupper((string) ($result['currency'] ?? ''));
+        $expectedCurrency = strtoupper((string) config('services.payment_gateway.currency', 'UGX'));
+        $amount = $result['amount'] ?? null;
+        $expectedAmount = (float) ($payment->customer_charge_amount ?: $payment->amount);
+
+        return ($currency === '' || $currency === $expectedCurrency)
+            && ($amount === null || abs((float) $amount - $expectedAmount) < 0.001);
+    }
+
+    private function providerSettlementData(array $result): array
+    {
+        $amount = isset($result['amount']) ? (float) $result['amount'] : null;
+        $fee = isset($result['provider_fee_actual']) ? (float) $result['provider_fee_actual'] : null;
+
+        return [
+            'provider_request_id' => $result['provider_request_id'] ?? null,
+            'provider_fee_actual' => $fee,
+            'provider_net_amount' => $amount !== null && $fee !== null ? max(0, $amount - $fee) : null,
+            'completed_at' => $result['completed_at'] ?? null,
+        ];
     }
 
     /**

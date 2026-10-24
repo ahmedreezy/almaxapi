@@ -70,6 +70,49 @@ class WalletPayoutTest extends TestCase
         $this->assertDatabaseCount('wallet_ledger_entries', 2);
     }
 
+    public function test_legacy_unsurcharged_relworx_payment_allocates_only_provider_net(): void
+    {
+        Http::fake();
+        $payment = $this->confirmedPayment('relworx', 1000, 970);
+
+        app(AgentCommissionService::class)->process($payment, 'legacy-reconciliation');
+
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payment_id' => $payment->id,
+            'entry_type' => 'payment_credit',
+            'amount' => 770,
+        ]);
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payment_id' => $payment->id,
+            'entry_type' => 'commission_credit',
+            'amount' => 200,
+        ]);
+    }
+
+    public function test_surcharged_relworx_payment_preserves_full_base_allocation(): void
+    {
+        Http::fake();
+        $payment = $this->confirmedPayment('relworx', 1000, 1000);
+        $payment->update([
+            'customer_charge_amount' => 1031,
+            'provider_fee_estimate' => 31,
+            'provider_fee_actual' => 31,
+        ]);
+
+        app(AgentCommissionService::class)->process($payment->fresh(), 'surcharged-payment');
+
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payment_id' => $payment->id,
+            'entry_type' => 'payment_credit',
+            'amount' => 800,
+        ]);
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payment_id' => $payment->id,
+            'entry_type' => 'commission_credit',
+            'amount' => 200,
+        ]);
+    }
+
     public function test_developer_can_reserve_and_cancel_own_relworx_payout(): void
     {
         Http::fake();
@@ -156,7 +199,7 @@ class WalletPayoutTest extends TestCase
             ->assertForbidden();
     }
 
-    private function confirmedPayment(string $provider, float $amount): Payment
+    private function confirmedPayment(string $provider, float $amount, ?float $providerNet = null): Payment
     {
         $suffix = (string) random_int(100000, 999999);
         $user = User::create([
@@ -171,6 +214,8 @@ class WalletPayoutTest extends TestCase
             'payment_method' => 'airtel',
             'phone' => $user->phone,
             'amount' => $amount,
+            'customer_charge_amount' => $amount,
+            'provider_net_amount' => $providerNet,
             'status' => 'active',
         ]);
 

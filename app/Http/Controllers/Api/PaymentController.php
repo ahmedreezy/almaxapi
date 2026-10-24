@@ -6,8 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Models\Subscription;
 use App\Services\MobileMoneyService;
-use App\Services\PaymentFailureAlertService;
-use App\Services\Payments\AgentCommissionService;
+use App\Services\Payments\PaymentSettlementService;
 use App\Services\Payments\RelworxGateway;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -222,8 +221,14 @@ class PaymentController extends Controller
     /** Relworx collection and payout webhook. */
     public function relworxWebhook(Request $request, RelworxGateway $gateway): JsonResponse
     {
-        if (! $gateway->verifyWebhook($request)) {
-            Log::warning('Relworx webhook: invalid or stale signature.', ['ip' => $request->ip()]);
+        $verification = $gateway->webhookVerification($request);
+        if (! $verification['valid']) {
+            Log::warning('Relworx webhook rejected.', [
+                'ip' => $request->ip(),
+                'reason' => $verification['reason'],
+                'timestamp_age' => $verification['timestamp_age'],
+                'configured_url' => config('services.relworx.webhook_url'),
+            ]);
 
             return response()->json(['error' => 'Invalid signature'], 401);
         }
@@ -278,10 +283,8 @@ class PaymentController extends Controller
             ->where(function ($query) use ($reference, $providerRequestId) {
                 if ($reference !== '') {
                     $query->where('payment_reference', $reference);
-                }
-                if ($providerRequestId !== '') {
-                    $method = $reference !== '' ? 'orWhere' : 'where';
-                    $query->{$method}('provider_request_id', $providerRequestId);
+                } elseif ($providerRequestId !== '') {
+                    $query->where('provider_request_id', $providerRequestId);
                 }
             })
             ->first();
@@ -295,11 +298,12 @@ class PaymentController extends Controller
         $expectedCurrency = strtoupper((string) config('services.payment_gateway.currency', 'UGX'));
         $eventCurrency = (string) ($event['currency'] ?? '');
         $eventAmount = $event['amount'] ?? null;
+        $expectedAmount = (float) ($payment->customer_charge_amount ?: $payment->amount);
         if (($eventCurrency !== '' && $eventCurrency !== $expectedCurrency)
-            || ($eventAmount !== null && abs((float) $eventAmount - (float) $payment->amount) > 0.001)) {
+            || ($eventAmount !== null && abs((float) $eventAmount - $expectedAmount) > 0.001)) {
             Log::warning('Relworx webhook: payment details do not match.', [
                 'payment_id' => $payment->id,
-                'expected_amount' => $payment->amount,
+                'expected_amount' => $expectedAmount,
                 'received_amount' => $eventAmount,
                 'expected_currency' => $expectedCurrency,
                 'received_currency' => $eventCurrency,
@@ -308,25 +312,38 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Payment details do not match'], 422);
         }
 
-        if ($payment->subscription->status !== 'pending') {
-            return response()->json(['message' => 'Already processed']);
-        }
-
-        $payment->update([
+        $providerData = [
             'provider_request_id' => $providerRequestId ?: $payment->provider_request_id,
-            'transaction_id' => $event['transaction_id'] ?: $payment->transaction_id,
-        ]);
+            'provider_fee_actual' => $event['provider_fee_actual'] ?? null,
+            'provider_net_amount' => $eventAmount !== null && isset($event['provider_fee_actual'])
+                ? max(0, (float) $eventAmount - (float) $event['provider_fee_actual'])
+                : null,
+            'completed_at' => $event['completed_at'] ?? null,
+        ];
 
         if ($status === 'success') {
-            $this->applyOutcome($payment->subscription, true, $event['transaction_id'] ?: $providerRequestId, 'relworx-webhook');
+            if ($payment->status === 'confirmed') {
+                return response()->json(['message' => 'Already processed']);
+            }
+            $this->applyOutcome(
+                $payment->subscription,
+                true,
+                $event['transaction_id'] ?: $providerRequestId,
+                'relworx-webhook',
+                providerData: $providerData
+            );
         } elseif ($status === 'failed') {
+            if ($payment->status !== 'pending' || $payment->subscription->status !== 'pending') {
+                return response()->json(['message' => 'Already processed']);
+            }
             $this->applyOutcome(
                 $payment->subscription,
                 false,
                 $event['transaction_id'] ?: $providerRequestId,
                 'relworx-webhook',
                 $this->failureCategory($status, (string) ($event['message'] ?? '')),
-                (string) ($event['message'] ?: 'Relworx reported a failed transaction.')
+                (string) ($event['message'] ?: 'Relworx reported a failed transaction.'),
+                $providerData
             );
         }
 
@@ -516,77 +533,17 @@ class PaymentController extends Controller
         ?string $txnId,
         string $source,
         string $failureCategory = 'provider',
-        string $failureReason = 'Payment provider reported a failed transaction.'
+        string $failureReason = 'Payment provider reported a failed transaction.',
+        array $providerData = []
     ): void {
-        if ($isSuccess) {
-            $now = now();
-            $expiresAt = $now->copy()->addSeconds($sub->durationSeconds());
-
-            $betslipLink = $sub->group?->betslip_link ?? '';
-            $betslipCode = $sub->group?->betslip_code ?? '';
-
-            $sub->update([
-                'status' => 'active',
-                'started_at' => $now,
-                'expires_at' => $expiresAt,
-                'betslip_link' => $betslipLink,
-                'betslip_code' => $betslipCode,
-            ]);
-
-            if ($sub->payment) {
-                $sub->payment->update([
-                    'status' => 'confirmed',
-                    'confirmed_at' => $sub->payment->confirmed_at ?: $now,
-                    'transaction_id' => $txnId ?: $sub->payment->transaction_id,
-                    'payment_reference' => $sub->payment_reference,
-                    'failure_category' => null,
-                    'failure_reason' => null,
-                    'failed_at' => null,
-                ]);
-            }
-
-            Log::info('Payment outcome: subscription activated', [
-                'source' => $source,
-                'subscription_id' => $sub->id,
-                'reference' => $sub->payment_reference,
-                'txn_id' => $txnId,
-            ]);
-
-            if ($sub->payment) {
-                try {
-                    app(AgentCommissionService::class)->process($sub->payment->fresh(), $source);
-                } catch (\Throwable $e) {
-                    Log::error('Payment outcome: agent commission processing failed.', [
-                        'source' => $source,
-                        'subscription_id' => $sub->id,
-                        'payment_id' => $sub->payment->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            return;
-        }
-
-        $sub->update(['status' => 'failed']);
-
-        if ($sub->payment) {
-            $sub->payment->update([
-                'transaction_id' => $txnId ?: $sub->payment->transaction_id,
-                'payment_reference' => $sub->payment_reference,
-            ]);
-            app(PaymentFailureAlertService::class)->record(
-                $sub->payment,
-                $failureCategory,
-                $failureReason
-            );
-        }
-
-        Log::info('Payment outcome: subscription failed', [
-            'source' => $source,
-            'subscription_id' => $sub->id,
-            'reference' => $sub->payment_reference,
-            'txn_id' => $txnId,
-        ]);
+        app(PaymentSettlementService::class)->apply(
+            $sub,
+            $isSuccess,
+            $txnId,
+            $source,
+            $providerData,
+            $failureCategory,
+            $failureReason
+        );
     }
 }

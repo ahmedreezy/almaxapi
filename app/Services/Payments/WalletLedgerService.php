@@ -24,7 +24,11 @@ class WalletLedgerService
         $provider = strtolower((string) ($payment->provider ?: 'jpesa'));
         $currency = strtoupper((string) config('services.payment_gateway.currency', 'UGX'));
         $commission = max(0, round($commission, 2));
-        $ownerAmount = max(0, round((float) $payment->amount - $commission, 2));
+        $providerNet = $payment->provider_net_amount;
+        $allocatable = $providerNet === null
+            ? (float) $payment->amount
+            : min((float) $payment->amount, max(0, (float) $providerNet));
+        $ownerAmount = max(0, round($allocatable - $commission, 2));
 
         DB::transaction(function () use ($payment, $provider, $currency, $commission, $ownerAmount, $creditDeveloper) {
             if ($ownerAmount > 0) {
