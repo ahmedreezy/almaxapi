@@ -7,6 +7,7 @@ use App\Services\PaymentFailureAlertService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class PaymentSettlementService
 {
@@ -66,6 +67,7 @@ class PaymentSettlementService
                         'provider_fee_actual' => $actualFee,
                         'provider_net_amount' => $netAmount,
                         'payment_reference' => $sub->payment_reference,
+                        'receipt_number' => $payment->receipt_number ?: 'ALX-RCP-'.Str::upper(Str::random(12)),
                         'failure_category' => null,
                         'failure_reason' => null,
                         'failed_at' => null,

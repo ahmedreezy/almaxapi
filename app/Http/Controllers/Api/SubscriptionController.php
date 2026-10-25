@@ -16,6 +16,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
 /**
@@ -286,12 +287,14 @@ class SubscriptionController extends Controller
     }
 
     /**
-     * Public (throttled): poll the payment status of a subscription.
+     * Authenticated user: poll the payment status of their own subscription.
      * Used by the frontend spinner while awaiting STK push approval.
      */
-    public function paymentStatus(int $id): JsonResponse
+    public function paymentStatus(Request $request, int $id): JsonResponse
     {
-        $sub = Subscription::with(['payment', 'group'])->findOrFail($id);
+        $sub = Subscription::with(['payment', 'group'])
+            ->where('user_id', $request->user()->id)
+            ->findOrFail($id);
 
         if ($sub->status === 'pending') {
             $this->tryActivateFromProviderQuery($sub);
@@ -358,6 +361,7 @@ class SubscriptionController extends Controller
         $group = $sub->relationLoaded('group') ? $sub->group : null;
         $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
         $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
+        $paymentConfirmed = in_array($sub->payment?->status, ['confirmed', 'success', 'successful', 'completed'], true);
 
         return [
             'id' => $sub->id,
@@ -368,6 +372,10 @@ class SubscriptionController extends Controller
             'paymentMethod' => $sub->payment_method,
             'paymentProvider' => $sub->payment?->provider ?? 'jpesa',
             'paymentReference' => $sub->payment_reference,
+            'receiptNumber' => $paymentConfirmed ? $sub->payment?->receipt_number : null,
+            'receiptUrl' => $includeBetslip && $paymentConfirmed
+                ? URL::temporarySignedRoute('support.receipt', now()->addHours(24), ['payment' => $sub->payment->id])
+                : null,
             'phone' => $sub->phone,
             'amount' => $sub->amount,
             'baseAmount' => (float) $sub->amount,
@@ -416,6 +424,7 @@ class SubscriptionController extends Controller
                 $sub->payment->update([
                     'status' => 'confirmed',
                     'confirmed_at' => $sub->payment->confirmed_at ?: $now,
+                    'receipt_number' => $sub->payment->receipt_number ?: 'ALX-RCP-'.Str::upper(Str::random(12)),
                 ]);
             }
 

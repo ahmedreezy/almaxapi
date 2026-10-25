@@ -113,7 +113,7 @@ Route::prefix('auth')->middleware('throttle:auth')->group(function () {
 
 // ─── Users (public registration/login, admin management) ───────────────────
 Route::prefix('users')->group(function () {
-    // Public
+    // Public purchase initiation
     Route::post('/', [UserController::class, 'register'])
         ->middleware('throttle:auth');
     Route::post('/login', [UserController::class, 'login'])
@@ -183,7 +183,7 @@ Route::prefix('subscriptions')->group(function () {
     Route::get('/user/{userId}', [SubscriptionController::class, 'forUser'])
         ->middleware('throttle:api');
     Route::get('/{id}/payment-status', [SubscriptionController::class, 'paymentStatus'])
-        ->middleware('throttle:api');
+        ->middleware(['auth.user', 'throttle:api']);
 
     // Admin
     Route::get('/', [SubscriptionController::class, 'index'])
