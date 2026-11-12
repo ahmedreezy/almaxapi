@@ -98,6 +98,21 @@ class SubscriptionController extends Controller
     /** Authenticated user: get only the subscriptions owned by this account. */
     public function forMe(Request $request): JsonResponse
     {
+        // Recover completed Relworx collections even when the original browser
+        // tab no longer has the payment ID and the webhook was delayed/lost.
+        Subscription::with(['payment', 'group'])
+            ->where('user_id', $request->user()->id)
+            ->whereIn('status', ['pending', 'failed'])
+            ->where('created_at', '>=', now()->subHours(48))
+            ->whereHas('payment', function ($query) {
+                $query->where('provider', 'relworx')
+                    ->whereIn('status', ['pending', 'failed']);
+            })
+            ->orderByDesc('created_at')
+            ->limit(5)
+            ->get()
+            ->each(fn (Subscription $sub) => $this->tryActivateFromProviderQuery($sub));
+
         return $this->forUser($request->user()->id);
     }
 
@@ -296,7 +311,8 @@ class SubscriptionController extends Controller
             ->where('user_id', $request->user()->id)
             ->findOrFail($id);
 
-        if ($sub->status === 'pending') {
+        if ($sub->status === 'pending'
+            || ($sub->status === 'failed' && $sub->payment?->provider === 'relworx')) {
             $this->tryActivateFromProviderQuery($sub);
             $sub = $sub->fresh(['payment', 'group']);
         }
@@ -320,8 +336,11 @@ class SubscriptionController extends Controller
             return;
         }
 
-        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment, $payment->payment_reference);
-        if (($result['status'] ?? 'unknown') === 'failed') {
+        // Let the selected gateway choose from the merchant and provider-side
+        // identifiers saved at initiation instead of overriding its lookup
+        // strategy. This keeps recovery correct for both configured gateways.
+        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment);
+        if (($result['status'] ?? 'unknown') === 'failed' && $payment->status === 'pending') {
             app(PaymentSettlementService::class)->apply(
                 $sub,
                 false,
@@ -612,14 +631,8 @@ class SubscriptionController extends Controller
                 ->where('group_id', $group->id)
                 ->whereIn('status', ['pending', 'failed'])
                 ->where('created_at', '<', $cutoff)
+                ->whereDoesntHave('payment')
                 ->each(function (Subscription $sub) {
-                    if ($sub->payment && $sub->payment->status === 'pending') {
-                        app(PaymentFailureAlertService::class)->record(
-                            $sub->payment,
-                            'provider',
-                            'Payment remained pending past the package cleanup window without a provider confirmation.'
-                        );
-                    }
                     DB::transaction(function () use ($sub) {
                         $sub->delete();
                     });

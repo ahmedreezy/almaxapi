@@ -19,7 +19,7 @@ class ReconcileRelworxPayments extends Command
         $hours = max(1, (int) $this->option('hours'));
         $payments = Payment::with(['subscription.group'])
             ->where('provider', 'relworx')
-            ->where('status', 'pending')
+            ->whereIn('status', ['pending', 'failed'])
             ->where('created_at', '>=', now()->subHours($hours))
             ->orderBy('id')
             ->limit(250)
@@ -41,7 +41,9 @@ class ReconcileRelworxPayments extends Command
                     $this->providerData($result)
                 );
                 $this->info("Confirmed Relworx payment {$payment->id}.");
-            } elseif ($status === 'failed' && ($result['reference_matches'] ?? true)) {
+            } elseif ($status === 'failed'
+                && $payment->status === 'pending'
+                && ($result['reference_matches'] ?? true)) {
                 $settlements->apply(
                     $payment->subscription,
                     false,

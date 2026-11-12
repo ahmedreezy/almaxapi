@@ -419,16 +419,22 @@ class PaymentController extends Controller
 
         $sub = null;
 
+        // A collection can be approved after an initiation timeout or an
+        // earlier provider error marked the attempt failed. Successful,
+        // authenticated provider outcomes must be allowed to recover those
+        // attempts; failure outcomes may only transition pending attempts.
+        $eligibleStatuses = $status === 'approved' ? ['pending', 'failed'] : ['pending'];
+
         if ($reference !== '') {
             $sub = Subscription::with(['payment', 'group'])
                 ->where('payment_reference', $reference)
-                ->where('status', 'pending')
+                ->whereIn('status', $eligibleStatuses)
                 ->first();
         }
 
         if (! $sub && $txnId !== null && $txnId !== '') {
             $sub = Subscription::with(['payment', 'group'])
-                ->where('status', 'pending')
+                ->whereIn('status', $eligibleStatuses)
                 ->whereHas('payment', function ($q) use ($txnId) {
                     $q->where('transaction_id', $txnId);
                 })
@@ -439,7 +445,7 @@ class PaymentController extends Controller
         if (! $sub && $txnId !== null && $txnId !== '') {
             $sub = Subscription::with(['payment', 'group'])
                 ->where('payment_reference', $txnId)
-                ->where('status', 'pending')
+                ->whereIn('status', $eligibleStatuses)
                 ->first();
         }
 

@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Models\Group;
 use App\Models\Subscription;
-use App\Services\PaymentFailureAlertService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -13,9 +12,9 @@ use Illuminate\Support\Facades\Log;
  * Scheduled command: runs hourly via `php artisan schedule:run`.
  *
  * Rule:
- *   – When a group's subscription_deadline passes today, delete all PENDING and
- *     FAILED subscriptions for that group that were created MORE than 2 hours
- *     before the deadline (they are clearly abandoned).
+ *   – When a group's subscription_deadline passes today, delete only PENDING
+ *     and FAILED subscriptions without a payment ledger row that were created
+ *     MORE than 2 hours before the deadline.
  *   – Subscriptions submitted within 2 hours before the deadline are KEPT for
  *     admin review — those users likely paid but the system didn't auto-confirm.
  *
@@ -25,7 +24,7 @@ use Illuminate\Support\Facades\Log;
 class CleanupDeadlineSubscriptions extends Command
 {
     protected $signature   = 'subscriptions:cleanup-deadline';
-    protected $description = 'Delete stale pending/failed subscriptions past booking deadline (keeps last-2h window for admin review)';
+    protected $description = 'Delete stale payment-less subscriptions past booking deadline (keeps payment attempts recoverable)';
 
     public function handle(): int
     {
@@ -46,16 +45,10 @@ class CleanupDeadlineSubscriptions extends Command
                 ->where('group_id', $group->id)
                 ->whereIn('status', ['pending', 'failed'])
                 ->where('created_at', '<', $cutoff)
+                ->whereDoesntHave('payment')
                 ->get();
 
             foreach ($subs as $sub) {
-                if ($sub->payment && $sub->payment->status === 'pending') {
-                    app(PaymentFailureAlertService::class)->record(
-                        $sub->payment,
-                        'provider',
-                        'Payment remained pending past the package cleanup window without a provider confirmation.'
-                    );
-                }
                 DB::transaction(function () use ($sub) {
                     $sub->delete();
                 });

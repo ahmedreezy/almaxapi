@@ -3,9 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\AdminUser;
+use App\Models\Group;
 use App\Models\Payment;
 use App\Models\PaymentGatewaySetting;
 use App\Models\PaymentGatewaySwitch;
+use App\Models\Subscription;
+use App\Models\User;
 use App\Services\Payments\RelworxGateway;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
@@ -155,6 +158,129 @@ class PaymentGatewayTest extends TestCase
         $this->assertSame(30.0, $result['provider_fee_actual']);
         Http::assertSentCount(1);
         Http::assertSent(fn ($request) => $request->data()['internal_reference'] === 'ALX-current-customer-reference');
+    }
+
+    public function test_relworx_reconciliation_recovers_a_recent_failed_payment(): void
+    {
+        $this->configureRelworx();
+        $user = User::create([
+            'username' => 'Relworx Recovery User',
+            'phone' => '0712000100',
+            'password_hash' => Hash::make('pass'),
+        ]);
+        $reference = 'ALX-relworx-scheduled-recovery';
+        $sub = Subscription::create([
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'amount' => 1000,
+            'status' => 'failed',
+            'payment_reference' => $reference,
+        ]);
+        $payment = Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $user->id,
+            'amount' => 1000,
+            'customer_charge_amount' => 1000,
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'status' => 'failed',
+            'payment_reference' => $reference,
+            'provider_request_id' => 'RWX-SCHEDULED-123',
+            'provider' => 'relworx',
+        ]);
+
+        Http::fake(fn () => Http::response([
+            'success' => true,
+            'request_status' => 'success',
+            'customer_reference' => $reference,
+            'internal_reference' => 'RWX-SCHEDULED-123',
+            'provider_transaction_id' => 'RWX-TXN-SCHEDULED',
+            'amount' => 1000,
+            'currency' => 'UGX',
+            'charge' => 30,
+            'completed_at' => now()->toIso8601String(),
+        ]));
+
+        $this->artisan('payments:reconcile-relworx')->assertSuccessful();
+
+        $this->assertDatabaseHas('subscriptions', ['id' => $sub->id, 'status' => 'active']);
+        $payment->refresh();
+        $this->assertSame('confirmed', $payment->status);
+        $this->assertSame('RWX-TXN-SCHEDULED', $payment->transaction_id);
+        $this->assertNotEmpty($payment->receipt_number);
+    }
+
+    public function test_relworx_collection_webhook_confirms_payment_receipt_and_package(): void
+    {
+        $this->configureRelworx();
+        $user = User::create([
+            'username' => 'Relworx Webhook User',
+            'phone' => '0712000101',
+            'password_hash' => Hash::make('pass'),
+        ]);
+        $group = Group::create([
+            'name' => 'Relworx Webhook Package',
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'price' => 1000,
+            'betslip_link' => 'https://example.test/relworx-webhook-ticket',
+            'betslip_code' => 'RWX-WEBHOOK',
+            'is_special' => false,
+            'is_active' => true,
+        ]);
+        $reference = 'ALX-relworx-webhook-success';
+        $sub = Subscription::create([
+            'user_id' => $user->id,
+            'group_id' => $group->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'amount' => 1000,
+            'status' => 'pending',
+            'payment_reference' => $reference,
+        ]);
+        $payment = Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $user->id,
+            'amount' => 1000,
+            'customer_charge_amount' => 1000,
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'status' => 'pending',
+            'payment_reference' => $reference,
+            'provider_request_id' => 'RWX-WEBHOOK-123',
+            'provider' => 'relworx',
+        ]);
+        $payload = [
+            'status' => 'success',
+            'message' => 'Request payment completed successfully.',
+            'customer_reference' => $reference,
+            'internal_reference' => 'RWX-WEBHOOK-123',
+            'amount' => 1000,
+            'currency' => 'UGX',
+            'charge' => 30,
+            'completed_at' => now()->toIso8601String(),
+        ];
+        $timestamp = time();
+
+        $this->withHeader('Relworx-Signature', "t={$timestamp},v=".$this->relworxSignature($payload, $timestamp))
+            ->postJson('/api/payments/webhooks/relworx', $payload)
+            ->assertOk()
+            ->assertJsonPath('message', 'Processed');
+
+        $sub->refresh();
+        $payment->refresh();
+        $this->assertSame('active', $sub->status);
+        $this->assertSame('https://example.test/relworx-webhook-ticket', $sub->betslip_link);
+        $this->assertSame('RWX-WEBHOOK', $sub->betslip_code);
+        $this->assertSame('confirmed', $payment->status);
+        $this->assertNotEmpty($payment->receipt_number);
     }
 
     private function configureRelworx(): void

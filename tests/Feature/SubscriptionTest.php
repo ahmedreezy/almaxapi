@@ -3,9 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\Group;
+use App\Models\Payment;
 use App\Models\Subscription;
 use App\Models\User;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -268,6 +271,155 @@ class SubscriptionTest extends TestCase
         $this->assertSame('', $sub['betslipLink']);
         $this->assertSame('', $sub['betslipCode']);
         $this->assertSame('', $sub['packagePhoto']);
+    }
+
+    public function test_payment_status_poll_uses_jpesa_transaction_id_and_delivers_receipt_and_package(): void
+    {
+        Config::set('services.mobile_money.api_url', 'https://my.jpesa.com/api/');
+        Config::set('services.mobile_money.api_key', 'test-key');
+        Http::fake(fn () => Http::response(['status' => 'approved'], 200));
+
+        $ctx = $this->createUser('0712000003');
+        $group = $this->makeGroup([
+            'betslip_link' => 'https://example.test/winning-ticket',
+            'betslip_code' => 'WIN-123',
+        ]);
+        $reference = 'ALX-merchant-reference';
+        $sub = $this->seedSubscription($ctx['user'], [
+            'group_id' => $group->id,
+            'payment_reference' => $reference,
+        ]);
+        $payment = Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $ctx['user']->id,
+            'amount' => $sub->amount,
+            'plan_type' => $sub->plan_type,
+            'payment_method' => $sub->payment_method,
+            'phone' => $sub->phone,
+            'status' => 'pending',
+            'payment_reference' => $reference,
+            'transaction_id' => 'JP-PROVIDER-123',
+            'provider_request_id' => 'JP-PROVIDER-123',
+            'provider' => 'jpesa',
+        ]);
+
+        $response = $this->withHeaders($ctx['headers'])
+            ->getJson("/api/subscriptions/{$sub->id}/payment-status")
+            ->assertOk()
+            ->assertJsonPath('status', 'active')
+            ->assertJsonPath('subscription.betslipLink', 'https://example.test/winning-ticket')
+            ->assertJsonPath('subscription.betslipCode', 'WIN-123');
+
+        $this->assertNotEmpty($response->json('subscription.receiptNumber'));
+        $this->assertNotEmpty($response->json('subscription.receiptUrl'));
+        $this->assertDatabaseHas('payments', [
+            'id' => $payment->id,
+            'status' => 'confirmed',
+            'transaction_id' => 'JP-PROVIDER-123',
+        ]);
+        Http::assertSent(fn ($request) => str_contains($request->body(), '<tid>JP-PROVIDER-123</tid>')
+            && ! str_contains($request->body(), "<tid>{$reference}</tid>"));
+    }
+
+    public function test_my_subscriptions_recovers_failed_relworx_payment_and_delivers_receipt_and_package(): void
+    {
+        Config::set('services.relworx', [
+            'api_url' => 'https://payments.relworx.com/api',
+            'api_key' => 'relworx-test-key',
+            'account_no' => 'RELTEST123',
+            'webhook_key' => 'webhook-test-key',
+            'webhook_url' => 'https://almaxpredictions.com/api/payments/webhooks/relworx',
+            'webhook_tolerance' => 300,
+            'timeout' => 10,
+        ]);
+
+        $ctx = $this->createUser('0712000004');
+        $group = $this->makeGroup([
+            'betslip_link' => 'https://example.test/relworx-ticket',
+            'betslip_code' => 'RWX-123',
+        ]);
+        $reference = 'ALX-relworx-reference';
+        $sub = $this->seedSubscription($ctx['user'], [
+            'group_id' => $group->id,
+            'status' => 'failed',
+            'payment_reference' => $reference,
+        ]);
+        $payment = Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $ctx['user']->id,
+            'amount' => 100,
+            'customer_charge_amount' => 100,
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $ctx['user']->phone,
+            'status' => 'failed',
+            'payment_reference' => $reference,
+            'provider_request_id' => 'RWX-INTERNAL-123',
+            'provider' => 'relworx',
+        ]);
+
+        Http::fake(fn () => Http::response([
+            'success' => true,
+            'request_status' => 'success',
+            'customer_reference' => $reference,
+            'internal_reference' => 'RWX-INTERNAL-123',
+            'provider_transaction_id' => 'RWX-TXN-123',
+            'amount' => 100,
+            'currency' => 'UGX',
+            'charge' => 3,
+            'completed_at' => now()->toIso8601String(),
+        ]));
+
+        $response = $this->withHeaders($ctx['headers'])
+            ->getJson('/api/subscriptions/me')
+            ->assertOk()
+            ->assertJsonPath('0.status', 'active')
+            ->assertJsonPath('0.betslipLink', 'https://example.test/relworx-ticket')
+            ->assertJsonPath('0.betslipCode', 'RWX-123');
+
+        $this->assertNotEmpty($response->json('0.receiptNumber'));
+        $this->assertNotEmpty($response->json('0.receiptUrl'));
+        $this->assertDatabaseHas('payments', [
+            'id' => $payment->id,
+            'status' => 'confirmed',
+            'transaction_id' => 'RWX-TXN-123',
+            'provider_request_id' => 'RWX-INTERNAL-123',
+        ]);
+    }
+
+    public function test_deadline_cleanup_preserves_payment_linked_subscription_for_late_reconciliation(): void
+    {
+        $ctx = $this->createUser('0712000005');
+        $group = $this->makeGroup([
+            'subscription_deadline' => now()->subHour()->format('Y-m-d\TH:i'),
+        ]);
+        $sub = $this->seedSubscription($ctx['user'], [
+            'group_id' => $group->id,
+            'payment_reference' => 'ALX-cleanup-recovery',
+        ]);
+        $sub->forceFill(['created_at' => now()->subHours(4)])->save();
+        Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $ctx['user']->id,
+            'amount' => 100,
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $ctx['user']->phone,
+            'status' => 'pending',
+            'payment_reference' => 'ALX-cleanup-recovery',
+            'provider' => 'relworx',
+        ]);
+
+        $orphan = $this->seedSubscription($ctx['user'], [
+            'group_id' => $group->id,
+            'phone' => '0712000099',
+        ]);
+        $orphan->forceFill(['created_at' => now()->subHours(4)])->save();
+
+        $this->artisan('subscriptions:cleanup-deadline')->assertSuccessful();
+
+        $this->assertDatabaseHas('subscriptions', ['id' => $sub->id]);
+        $this->assertDatabaseMissing('subscriptions', ['id' => $orphan->id]);
     }
 
     // ─── Admin: list & update ─────────────────────────────────────────────
