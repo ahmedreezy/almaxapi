@@ -251,4 +251,45 @@ class PaymentTest extends TestCase
         $this->assertNull($payment->agent_commission_transaction_id);
         $this->assertStringContainsString('NOT permitted', $payment->agent_commission_error);
     }
+
+    public function test_late_approved_webhook_recovers_failed_subscription_and_issues_receipt(): void
+    {
+        $user = User::create([
+            'username' => 'LateApprovalUser',
+            'phone' => '0720000102',
+            'password_hash' => Hash::make('pass'),
+        ]);
+        $reference = 'ALX-LATE-APPROVAL';
+        $sub = Subscription::create([
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'amount' => 5000,
+            'status' => 'failed',
+            'payment_reference' => $reference,
+        ]);
+        $payment = Payment::create([
+            'subscription_id' => $sub->id,
+            'user_id' => $user->id,
+            'amount' => 5000,
+            'plan_type' => 'daily',
+            'payment_method' => 'mtn',
+            'phone' => $user->phone,
+            'status' => 'failed',
+            'payment_reference' => $reference,
+        ]);
+
+        $this->getJson("/api/payments/webhook?tx={$reference}&tid=JP-LATE-123&status=approved")
+            ->assertOk()
+            ->assertJsonPath('message', 'Processed');
+
+        $this->assertDatabaseHas('subscriptions', ['id' => $sub->id, 'status' => 'active']);
+        $payment->refresh();
+        $this->assertSame('confirmed', $payment->status);
+        $this->assertSame('JP-LATE-123', $payment->transaction_id);
+        $this->assertNotNull($payment->confirmed_at);
+        $this->assertNotEmpty($payment->receipt_number);
+    }
 }

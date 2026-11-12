@@ -16,6 +16,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
 /**
@@ -97,6 +98,21 @@ class SubscriptionController extends Controller
     /** Authenticated user: get only the subscriptions owned by this account. */
     public function forMe(Request $request): JsonResponse
     {
+        // Recover completed Relworx collections even when the original browser
+        // tab no longer has the payment ID and the webhook was delayed/lost.
+        Subscription::with(['payment', 'group'])
+            ->where('user_id', $request->user()->id)
+            ->whereIn('status', ['pending', 'failed'])
+            ->where('created_at', '>=', now()->subHours(48))
+            ->whereHas('payment', function ($query) {
+                $query->where('provider', 'relworx')
+                    ->whereIn('status', ['pending', 'failed']);
+            })
+            ->orderByDesc('created_at')
+            ->limit(5)
+            ->get()
+            ->each(fn (Subscription $sub) => $this->tryActivateFromProviderQuery($sub));
+
         return $this->forUser($request->user()->id);
     }
 
@@ -286,14 +302,17 @@ class SubscriptionController extends Controller
     }
 
     /**
-     * Public (throttled): poll the payment status of a subscription.
+     * Authenticated user: poll the payment status of their own subscription.
      * Used by the frontend spinner while awaiting STK push approval.
      */
-    public function paymentStatus(int $id): JsonResponse
+    public function paymentStatus(Request $request, int $id): JsonResponse
     {
-        $sub = Subscription::with(['payment', 'group'])->findOrFail($id);
+        $sub = Subscription::with(['payment', 'group'])
+            ->where('user_id', $request->user()->id)
+            ->findOrFail($id);
 
-        if ($sub->status === 'pending') {
+        if ($sub->status === 'pending'
+            || ($sub->status === 'failed' && $sub->payment?->provider === 'relworx')) {
             $this->tryActivateFromProviderQuery($sub);
             $sub = $sub->fresh(['payment', 'group']);
         }
@@ -317,8 +336,11 @@ class SubscriptionController extends Controller
             return;
         }
 
-        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment, $payment->payment_reference);
-        if (($result['status'] ?? 'unknown') === 'failed') {
+        // Let the selected gateway choose from the merchant and provider-side
+        // identifiers saved at initiation instead of overriding its lookup
+        // strategy. This keeps recovery correct for both configured gateways.
+        $result = app(PaymentGatewayManager::class)->forPayment($payment)->queryCollection($payment);
+        if (($result['status'] ?? 'unknown') === 'failed' && $payment->status === 'pending') {
             app(PaymentSettlementService::class)->apply(
                 $sub,
                 false,
@@ -358,6 +380,7 @@ class SubscriptionController extends Controller
         $group = $sub->relationLoaded('group') ? $sub->group : null;
         $betslipLink = $sub->betslip_link ?: ($group?->betslip_link ?? '');
         $betslipCode = $sub->betslip_code ?: ($group?->betslip_code ?? '');
+        $paymentConfirmed = in_array($sub->payment?->status, ['confirmed', 'success', 'successful', 'completed'], true);
 
         return [
             'id' => $sub->id,
@@ -368,6 +391,10 @@ class SubscriptionController extends Controller
             'paymentMethod' => $sub->payment_method,
             'paymentProvider' => $sub->payment?->provider ?? 'jpesa',
             'paymentReference' => $sub->payment_reference,
+            'receiptNumber' => $paymentConfirmed ? $sub->payment?->receipt_number : null,
+            'receiptUrl' => $includeBetslip && $paymentConfirmed
+                ? URL::temporarySignedRoute('support.receipt', now()->addHours(24), ['payment' => $sub->payment->id])
+                : null,
             'phone' => $sub->phone,
             'amount' => $sub->amount,
             'baseAmount' => (float) $sub->amount,
@@ -416,6 +443,7 @@ class SubscriptionController extends Controller
                 $sub->payment->update([
                     'status' => 'confirmed',
                     'confirmed_at' => $sub->payment->confirmed_at ?: $now,
+                    'receipt_number' => $sub->payment->receipt_number ?: 'ALX-RCP-'.Str::upper(Str::random(12)),
                 ]);
             }
 
@@ -603,14 +631,8 @@ class SubscriptionController extends Controller
                 ->where('group_id', $group->id)
                 ->whereIn('status', ['pending', 'failed'])
                 ->where('created_at', '<', $cutoff)
+                ->whereDoesntHave('payment')
                 ->each(function (Subscription $sub) {
-                    if ($sub->payment && $sub->payment->status === 'pending') {
-                        app(PaymentFailureAlertService::class)->record(
-                            $sub->payment,
-                            'provider',
-                            'Payment remained pending past the package cleanup window without a provider confirmation.'
-                        );
-                    }
                     DB::transaction(function () use ($sub) {
                         $sub->delete();
                     });

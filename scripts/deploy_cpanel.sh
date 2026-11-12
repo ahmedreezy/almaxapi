@@ -140,6 +140,15 @@ if [[ "$worker_running" != true && "$worker_scheduled" != true ]]; then
   exit 1
 fi
 
+echo "[verify] Checking Laravel scheduler supervision..."
+if ! command -v crontab >/dev/null 2>&1 || \
+   ! crontab -l 2>/dev/null | grep -Eq 'artisan schedule:run'; then
+  echo "[error] Laravel's scheduler cron was not found."
+  echo "Add: * * * * * cd $APP_DIR && php artisan schedule:run >> /dev/null 2>&1"
+  echo "Relworx payment reconciliation cannot recover missed webhooks without it."
+  exit 1
+fi
+
 echo ""
 echo "Deploy complete."
 echo "=========================================="

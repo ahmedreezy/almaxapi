@@ -160,16 +160,31 @@ jobs:
           fi
 
           deploy_phase="preserve runtime files"
-          runtime_backup="$(mktemp -d "${TMPDIR:-/tmp}/almaxapi-runtime.XXXXXX")"
+          mkdir -p storage/app
+          runtime_backup="$(mktemp -d "$api_path/storage/app/almaxapi-runtime.XXXXXX")"
+          restore_runtime_files() {
+            if [[ ! -d "$runtime_backup/public" ]]; then
+              return
+            fi
+            mkdir -p public
+            for saved_path in "$runtime_backup/public"/*; do
+              target="public/$(basename "$saved_path")"
+              rm -rf -- "$target"
+              mv -- "$saved_path" public/
+            done
+          }
           cleanup() {
+            restore_runtime_files || true
             rm -rf "$runtime_backup"
           }
           trap cleanup EXIT
 
           mkdir -p "$runtime_backup/public"
           shopt -s nullglob dotglob
+          # Uploaded files use unique names and are left in place by
+          # `git reset --hard`; copying the entire, growing uploads tree to
+          # /tmp can exhaust cPanel disk quota before deployment begins.
           runtime_paths=(
-            public/uploads
             public/favicon.ico
             public/index.html
             public/js
@@ -181,7 +196,7 @@ jobs:
           )
           for path in "${runtime_paths[@]}"; do
             if [[ -e "$path" ]]; then
-              cp -a "$path" "$runtime_backup/public/"
+              mv -- "$path" "$runtime_backup/public/"
             fi
           done
 
@@ -192,9 +207,9 @@ jobs:
           git reset --hard origin/main
 
           deploy_phase="restore runtime files"
-          for path in "$runtime_backup/public"/*; do
-            cp -a "$path" public/
-          done
+          restore_runtime_files
+          rm -rf "$runtime_backup"
+          trap - EXIT
 
           deploy_phase="run Laravel deployment script"
           bash scripts/deploy_cpanel.sh
