@@ -168,8 +168,10 @@ jobs:
 
           mkdir -p "$runtime_backup/public"
           shopt -s nullglob dotglob
+          # Uploaded files use unique names and are left in place by
+          # `git reset --hard`; copying the entire, growing uploads tree to
+          # /tmp can exhaust cPanel disk quota before deployment begins.
           runtime_paths=(
-            public/uploads
             public/favicon.ico
             public/index.html
             public/js
