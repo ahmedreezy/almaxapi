@@ -21,13 +21,25 @@ use Illuminate\Validation\ValidationException;
 class UserController extends Controller
 {
     /** Admin: list all users with their subscription summary */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $users = User::with(['subscriptions' => function ($q) {
+        $data = $request->validate([
+            'page' => ['sometimes', 'integer', 'min:1'],
+            'per_page' => ['sometimes', 'integer', 'in:10,25,50'],
+            'search' => ['sometimes', 'nullable', 'string', 'max:100'],
+        ]);
+        $query = User::with(['subscriptions' => function ($q) {
             $q->orderByDesc('created_at');
-        }])->orderByDesc('id')->get();
+        }]);
+        $search = trim((string) ($data['search'] ?? ''));
+        if ($search !== '') {
+            $operator = DB::getDriverName() === 'pgsql' ? 'ilike' : 'like';
+            $query->where(fn ($match) => $match
+                ->where('username', $operator, "%{$search}%")
+                ->orWhere('phone', $operator, "%{$search}%"));
+        }
 
-        return response()->json($users);
+        return response()->json($query->orderByDesc('id')->paginate((int) ($data['per_page'] ?? 10)));
     }
 
     /** Public: register a new user */

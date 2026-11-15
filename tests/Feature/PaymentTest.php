@@ -51,7 +51,56 @@ class PaymentTest extends TestCase
         $this->withHeaders($ctx['headers'])
             ->getJson('/api/payments')
             ->assertStatus(200)
-            ->assertJsonStructure([['id', 'amount', 'status']]);
+            ->assertJsonPath('per_page', 10)
+            ->assertJsonStructure(['data' => [['id', 'amount', 'status']], 'current_page', 'last_page', 'total']);
+    }
+
+    public function test_admin_payment_listing_is_paginated_and_filterable(): void
+    {
+        $ctx = $this->createAdmin();
+        for ($i = 0; $i < 12; $i++) {
+            $user = User::create([
+                'username' => "Ledger User {$i}",
+                'phone' => '07210'.str_pad((string) $i, 5, '0', STR_PAD_LEFT),
+                'password_hash' => Hash::make('pass'),
+            ]);
+            $subscription = Subscription::create([
+                'user_id' => $user->id,
+                'odds_type' => '2',
+                'plan_type' => $i % 2 ? 'weekly' : 'daily',
+                'payment_method' => 'mtn',
+                'phone' => $user->phone,
+                'amount' => 5000 + $i,
+                'status' => $i % 3 === 0 ? 'pending' : 'active',
+            ]);
+            Payment::create([
+                'subscription_id' => $subscription->id,
+                'user_id' => $user->id,
+                'amount' => 5000 + $i,
+                'plan_type' => $subscription->plan_type,
+                'payment_method' => 'mtn',
+                'phone' => $user->phone,
+                'status' => $i % 3 === 0 ? 'pending' : 'confirmed',
+                'payment_reference' => "LEDGER-{$i}",
+                'created_at' => now()->subMinutes($i),
+            ]);
+        }
+
+        $this->withHeaders($ctx['headers'])
+            ->getJson('/api/payments?per_page=10&page=1')
+            ->assertOk()
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('total', 12)
+            ->assertJsonPath('last_page', 2);
+
+        $this->withHeaders($ctx['headers'])
+            ->getJson('/api/payments?status=pending&search=Ledger%20User')
+            ->assertOk()
+            ->assertJsonPath('total', 4);
+
+        $this->withHeaders($ctx['headers'])
+            ->getJson('/api/payments?per_page=15')
+            ->assertStatus(422);
     }
 
     public function test_listing_payments_requires_admin(): void

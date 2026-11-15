@@ -143,7 +143,7 @@ class UserTest extends TestCase
         $this->withHeaders($ctx['headers'])
             ->getJson('/api/users')
             ->assertStatus(200)
-            ->assertJsonStructure([['id', 'username', 'phone']]);
+            ->assertJsonStructure(['data' => [['id', 'username', 'phone']], 'current_page', 'last_page', 'per_page', 'total']);
     }
 
     public function test_listing_users_requires_admin_token(): void

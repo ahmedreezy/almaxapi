@@ -468,6 +468,68 @@ class DeveloperAnalyticsController extends Controller
         ]);
     }
 
+    public function payments(): JsonResponse
+    {
+        $query = DB::table('payments')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
+        $total = (clone $query)->count();
+        $page = $query->cursorPaginate(10, [
+            'id', 'amount', 'plan_type', 'payment_method', 'phone', 'status',
+            'payment_reference', 'transaction_id', 'confirmed_at', 'failed_at',
+            'failure_category', 'failure_reason', 'subscription_id', 'user_id', 'provider', 'created_at',
+        ]);
+
+        $rows = $page->getCollection()->map(function ($payment) {
+            $phone = (string) $payment->phone;
+            $payment->phone = strlen($phone) > 4
+                ? str_repeat('*', strlen($phone) - 4).substr($phone, -4)
+                : $phone;
+
+            return $payment;
+        })->values();
+
+        return response()->json([
+            'data' => $rows,
+            'meta' => [
+                'total' => $total,
+                'count' => $rows->count(),
+                'next_cursor' => $page->nextCursor()?->encode(),
+                'has_more' => $page->hasMorePages(),
+            ],
+        ]);
+    }
+
+    public function commissionTransactions(): JsonResponse
+    {
+        $query = $this->trackedCommissionBase()
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
+        $total = (clone $query)->count();
+        $page = $query->cursorPaginate(10, [
+            'id', 'amount', 'plan_type', 'payment_method',
+            'agent_commission_amount', 'agent_commission_status',
+            'agent_commission_reference', 'agent_commission_processed_at',
+            'agent_commission_ratio', 'agent_commission_error', 'created_at',
+        ]);
+
+        $rows = $page->getCollection()->map(function ($row) {
+            $row->agent_commission_status = $this->normaliseCommissionStatus($row->agent_commission_status);
+
+            return $row;
+        })->values();
+
+        return response()->json([
+            'data' => $rows,
+            'meta' => [
+                'total' => $total,
+                'count' => $rows->count(),
+                'next_cursor' => $page->nextCursor()?->encode(),
+                'has_more' => $page->hasMorePages(),
+            ],
+        ]);
+    }
+
     public function supportInsights(Request $request): JsonResponse
     {
         $validated = $request->validate([
