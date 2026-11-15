@@ -192,6 +192,31 @@ class PaymentGatewayTest extends TestCase
         Http::assertSentCount(2);
     }
 
+    public function test_relworx_doctor_checks_api_and_signed_webhook_without_moving_money(): void
+    {
+        $this->configureRelworx();
+        Http::fake(function ($request) {
+            if (str_contains($request->url(), '/payment-requests/transactions')) {
+                return Http::response(['success' => true, 'transactions' => []]);
+            }
+
+            if ($request->url() === 'https://almaxpredictions.com/api/payments/webhooks/relworx') {
+                return Http::response(['message' => 'No matching payment'], 200);
+            }
+
+            return Http::response([], 500);
+        });
+
+        $this->artisan('payments:doctor-relworx --live-webhook')
+            ->expectsOutput('Relworx API connectivity: OK')
+            ->expectsOutput('Relworx signed webhook connectivity: HTTP 200')
+            ->assertSuccessful();
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request) => $request->url() === 'https://almaxpredictions.com/api/payments/webhooks/relworx'
+            && str_starts_with((string) $request->header('Relworx-Signature')[0], 't='));
+    }
+
     public function test_relworx_reconciliation_recovers_a_recent_failed_payment(): void
     {
         $this->configureRelworx();

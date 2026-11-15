@@ -322,16 +322,35 @@ class RelworxGateway implements PaymentGateway
             $signed .= $key.$value;
         }
 
-        $binary = hash_hmac('sha256', $signed, (string) config('services.relworx.webhook_key', ''), true);
-        $hex = bin2hex($binary);
+        $hex = $this->webhookSignature($params, $timestamp);
+        $binary = hex2bin($hex);
 
-        $valid = hash_equals($hex, $signature) || hash_equals(base64_encode($binary), $signature);
+        $valid = hash_equals($hex, $signature)
+            || ($binary !== false && hash_equals(base64_encode($binary), $signature));
 
         return [
             'valid' => $valid,
             'reason' => $valid ? 'valid' : 'signature_mismatch',
             'timestamp_age' => $timestampAge,
         ];
+    }
+
+    /** Generate the Relworx signature for a controlled server-side diagnostic. */
+    public function webhookSignature(array $payload, int $timestamp): string
+    {
+        $params = [
+            'customer_reference' => (string) ($payload['customer_reference'] ?? ''),
+            'internal_reference' => (string) ($payload['internal_reference'] ?? ''),
+            'status' => (string) ($payload['status'] ?? ''),
+        ];
+        ksort($params);
+
+        $signed = (string) config('services.relworx.webhook_url', '').$timestamp;
+        foreach ($params as $key => $value) {
+            $signed .= $key.$value;
+        }
+
+        return hash_hmac('sha256', $signed, (string) config('services.relworx.webhook_key', ''));
     }
 
     public function parseWebhook(Request $request): array

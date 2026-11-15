@@ -119,6 +119,9 @@ fi
 echo "[verify] Checking health endpoint routing..."
 php artisan route:list | grep -E "api/health|config/vip-config" || true
 
+echo "[verify] Checking live Relworx API and signed webhook connectivity..."
+php artisan payments:doctor-relworx --live-webhook
+
 echo "[verify] Checking platform AI support configuration and live model access..."
 php artisan support:doctor --channel=platform --probe-openai
 
