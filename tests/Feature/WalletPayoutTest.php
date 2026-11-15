@@ -22,6 +22,7 @@ class WalletPayoutTest extends TestCase
         Config::set('services.payment_gateway.currency', 'UGX');
         Config::set('services.payouts', [
             'execution_mode' => 'request_only',
+            'ui_poll_timeout_seconds' => 300,
             'owner_msisdn' => '+256700000111',
             'developer_msisdn' => '+256700000222',
         ]);
@@ -380,6 +381,56 @@ class WalletPayoutTest extends TestCase
         $this->assertTrue($result['success']);
         $this->assertSame('RWX-PAY-TXN', $result['transaction_id']);
         Http::assertSentCount(2);
+    }
+
+    public function test_old_processing_payout_is_marked_delayed_and_still_reconciled(): void
+    {
+        $this->enableImmediateRelworxPayouts();
+        Http::fake(['*/mobile-money/send-payment' => Http::response([
+            'success' => true,
+            'message' => 'Send payment in progress.',
+            'internal_reference' => 'RWX-OLD-FAILED-500',
+        ])]);
+        app(AgentCommissionService::class)->process($this->confirmedPayment('relworx', 5000), 'test');
+        $headers = $this->createAdmin('old-processing-wallet-owner')['headers'];
+        $created = $this->withHeaders($headers)->postJson('/api/admin/payout-requests', [
+            'amount' => 500,
+            'request_token' => 'owner-old-processing-500',
+        ]);
+
+        $payout = PayoutRequest::findOrFail($created->json('request.id'));
+        $payout->timestamps = false;
+        $payout->forceFill(['created_at' => now()->subDays(4)])->save();
+
+        $this->withHeaders($headers)
+            ->getJson('/api/admin/wallet')
+            ->assertOk()
+            ->assertJsonPath('payout_poll_timeout_seconds', 300)
+            ->assertJsonPath('requests.0.status', 'processing')
+            ->assertJsonPath('requests.0.display_status', 'delayed')
+            ->assertJsonPath('requests.0.is_delayed', true);
+
+        Http::fake(['*/mobile-money/check-request-status*' => Http::response([
+            'success' => true,
+            'request_status' => 'failed',
+            'customer_reference' => $payout->reference,
+            'internal_reference' => 'RWX-OLD-FAILED-500',
+            'amount' => 500,
+            'currency' => 'UGX',
+            'message' => 'Payout rejected by the mobile network.',
+        ])]);
+
+        $this->artisan('payouts:reconcile-relworx')->assertSuccessful();
+
+        $this->assertDatabaseHas('payout_requests', [
+            'id' => $payout->id,
+            'status' => 'failed',
+        ]);
+        $this->assertDatabaseHas('wallet_ledger_entries', [
+            'payout_request_id' => $payout->id,
+            'entry_type' => 'payout_release',
+            'amount' => 500,
+        ]);
     }
 
     public function test_relworx_minimum_payout_is_enforced(): void

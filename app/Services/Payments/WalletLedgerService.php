@@ -259,6 +259,11 @@ class WalletLedgerService
 
     public function serialiseRequest(PayoutRequest $request): array
     {
+        $pollTimeout = max(60, (int) config('services.payouts.ui_poll_timeout_seconds', 300));
+        $isDelayed = $request->status === 'processing'
+            && $request->created_at
+            && $request->created_at->lte(now()->subSeconds($pollTimeout));
+
         return [
             'id' => $request->id,
             'reference' => $request->reference,
@@ -268,6 +273,8 @@ class WalletLedgerService
             'currency' => $request->currency,
             'destination' => $this->maskMsisdn($request->destination_msisdn),
             'status' => $request->status,
+            'display_status' => $isDelayed ? 'delayed' : $request->status,
+            'is_delayed' => $isDelayed,
             'requested_by' => $request->requester?->username,
             'created_at' => $request->created_at,
             'cancelled_at' => $request->cancelled_at,
@@ -275,7 +282,9 @@ class WalletLedgerService
             'provider_fee' => $request->provider_fee_actual,
             'message' => match ($request->status) {
                 'pending' => 'Awaiting payout submission.',
-                'processing' => $request->failure_reason ?: 'Relworx is processing this payout.',
+                'processing' => $isDelayed
+                    ? 'Confirmation is delayed. Do not resend this payout; Almax will continue checking with Relworx.'
+                    : ($request->failure_reason ?: 'Relworx is processing this payout.'),
                 'failed' => $request->failure_reason ?: 'Relworx payout failed and the funds were released.',
                 'completed' => 'Payout completed successfully.',
                 default => null,

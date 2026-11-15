@@ -10,17 +10,19 @@ use Illuminate\Support\Facades\Log;
 
 class ReconcileRelworxPayouts extends Command
 {
-    protected $signature = 'payouts:reconcile-relworx {--hours=48 : Reconcile processing payouts created within this many hours}';
+    protected $signature = 'payouts:reconcile-relworx {--hours=0 : Optional lookback in hours; zero reconciles every processing payout}';
 
     protected $description = 'Reconcile processing Relworx wallet payouts with the provider';
 
     public function handle(RelworxGateway $gateway, PayoutExecutionService $payouts): int
     {
-        $hours = max(1, (int) $this->option('hours'));
-        $requests = PayoutRequest::query()
+        $hours = max(0, (int) $this->option('hours'));
+        $query = PayoutRequest::query()
             ->where('provider', 'relworx')
             ->where('status', 'processing')
-            ->where('created_at', '>=', now()->subHours($hours))
+            ->when($hours > 0, fn ($query) => $query->where('created_at', '>=', now()->subHours($hours)));
+
+        $requests = $query
             ->orderBy('id')
             ->limit(250)
             ->get();

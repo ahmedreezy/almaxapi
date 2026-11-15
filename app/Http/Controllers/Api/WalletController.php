@@ -23,6 +23,7 @@ class WalletController extends Controller
             'destination_configured' => trim((string) config('services.payouts.developer_msisdn', '')) !== '',
             'execution_mode' => config('services.payouts.execution_mode', 'request_only'),
             'minimum_payout' => $this->wallets->minimumPayoutAmount(),
+            'payout_poll_timeout_seconds' => $this->payoutPollTimeout(),
             'requests' => $this->requests('developer', $request->user()?->id),
         ]);
     }
@@ -63,6 +64,7 @@ class WalletController extends Controller
             'destination_configured' => trim((string) config('services.payouts.owner_msisdn', '')) !== '',
             'execution_mode' => config('services.payouts.execution_mode', 'request_only'),
             'minimum_payout' => $this->wallets->minimumPayoutAmount(),
+            'payout_poll_timeout_seconds' => $this->payoutPollTimeout(),
             'requests' => $this->requests(),
         ]);
     }
@@ -123,6 +125,11 @@ class WalletController extends Controller
         }
 
         return $this->payouts->execute($payout);
+    }
+
+    private function payoutPollTimeout(): int
+    {
+        return max(60, (int) config('services.payouts.ui_poll_timeout_seconds', 300));
     }
 
     private function payoutMessage(PayoutRequest $payout): string

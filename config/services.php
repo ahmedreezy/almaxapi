@@ -75,6 +75,7 @@ return [
 
     'payouts' => [
         'execution_mode' => env('PAYOUT_EXECUTION_MODE', 'request_only'),
+        'ui_poll_timeout_seconds' => env('PAYOUT_UI_POLL_TIMEOUT_SECONDS', 300),
         'owner_msisdn' => env('PAYMENT_OWNER_PAYOUT_MSISDN', ''),
         'developer_msisdn' => env('PAYMENT_DEVELOPER_PAYOUT_MSISDN', env('PAYMENT_COMMISSION_RECIPIENT_MSISDN', '')),
     ],

@@ -122,7 +122,10 @@ php artisan route:list | grep -E "api/health|config/vip-config" || true
 echo "[verify] Checking live Relworx API and signed webhook connectivity..."
 php artisan payments:doctor-relworx --live-webhook
 
-echo "[verify] Inspecting non-terminal Relworx payouts without changing them..."
+echo "[verify] Reconciling non-terminal Relworx payouts..."
+php artisan payouts:reconcile-relworx
+
+echo "[verify] Inspecting remaining non-terminal Relworx payouts without changing them..."
 php artisan payouts:diagnose-relworx --limit=25
 
 echo "[verify] Checking platform AI support configuration and live model access..."
