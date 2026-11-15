@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\FootballTip;
+use App\Models\Group;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
@@ -43,6 +44,34 @@ class FootballTipTest extends TestCase
         $this->getJson('/api/football-tips')
             ->assertStatus(200)
             ->assertJsonStructure([['id', 'home', 'away', 'competition', 'kickoff']]);
+    }
+
+    public function test_public_tip_preserves_its_production_package_relationship(): void
+    {
+        $group = Group::create([
+            'name' => 'Daily Odd 5',
+            'odds_type' => '5',
+            'plan_type' => 'daily',
+            'price' => 15000,
+            'betslip_link' => '',
+            'betslip_code' => '',
+            'is_active' => true,
+        ]);
+
+        $tip = FootballTip::create(array_merge($this->validTip(), [
+            'caption' => 'A linked production-style pick',
+            'group_id' => $group->id,
+        ]));
+
+        $this->getJson('/api/football-tips')
+            ->assertOk()
+            ->assertJsonFragment([
+                'id' => $tip->id,
+                'groupId' => $group->id,
+            ])
+            ->assertJsonPath('0.group.id', $group->id)
+            ->assertJsonPath('0.group.name', 'Daily Odd 5')
+            ->assertJsonPath('0.group.effectivePrice', 15000);
     }
 
     public function test_listing_is_public_no_auth_needed(): void

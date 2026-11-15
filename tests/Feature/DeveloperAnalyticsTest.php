@@ -342,4 +342,76 @@ class DeveloperAnalyticsTest extends TestCase
                 && str_contains($body, '<amount>4000</amount>');
         });
     }
+
+    public function test_developer_ledgers_are_cursor_paginated_in_batches_of_ten(): void
+    {
+        $user = User::create([
+            'username' => 'Paginated Ledger Member',
+            'phone' => '0700777011',
+            'password_hash' => Hash::make('password123'),
+        ]);
+        $sub = Subscription::create([
+            'user_id' => $user->id,
+            'odds_type' => '2',
+            'plan_type' => 'daily',
+            'payment_method' => 'airtel',
+            'phone' => $user->phone,
+            'amount' => 10000,
+            'status' => 'active',
+        ]);
+
+        foreach (range(1, 12) as $index) {
+            $payment = Payment::create([
+                'subscription_id' => $sub->id,
+                'user_id' => $user->id,
+                'amount' => 10000 + $index,
+                'plan_type' => 'daily',
+                'payment_method' => 'airtel',
+                'phone' => $user->phone,
+                'status' => 'confirmed',
+                'agent_commission_amount' => 1000 + $index,
+                'agent_commission_ratio' => 0.1,
+                'agent_commission_status' => $index === 12 ? 'sent' : 'pending',
+            ]);
+            $payment->forceFill(['created_at' => now()->subMinutes(12 - $index)])->save();
+        }
+
+        $headers = $this->developerHeaders();
+        $first = $this->withHeaders($headers)
+            ->getJson('/api/analytics/developer/payments')
+            ->assertOk()
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('meta.total', 12)
+            ->assertJsonPath('meta.count', 10)
+            ->assertJsonPath('meta.has_more', true);
+
+        $this->assertSame('******7011', $first->json('data.0.phone'));
+        $firstIds = collect($first->json('data'))->pluck('id');
+        $second = $this->withHeaders($headers)
+            ->getJson('/api/analytics/developer/payments?cursor='.urlencode($first->json('meta.next_cursor')))
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('meta.has_more', false);
+        $this->assertTrue($firstIds->intersect(collect($second->json('data'))->pluck('id'))->isEmpty());
+
+        $commission = $this->withHeaders($headers)
+            ->getJson('/api/analytics/developer/commission-transactions')
+            ->assertOk()
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('meta.total', 12)
+            ->assertJsonPath('data.0.agent_commission_status', 'completed')
+            ->assertJsonPath('meta.has_more', true);
+
+        $this->withHeaders($headers)
+            ->getJson('/api/analytics/developer/commission-transactions?cursor='.urlencode($commission->json('meta.next_cursor')))
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('meta.has_more', false);
+    }
+
+    public function test_non_developer_cannot_access_paginated_ledgers(): void
+    {
+        $this->getJson('/api/analytics/developer/payments')->assertStatus(401);
+        $this->getJson('/api/analytics/developer/commission-transactions')->assertStatus(401);
+    }
 }

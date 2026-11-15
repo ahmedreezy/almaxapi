@@ -13,6 +13,7 @@ use App\Services\Payments\RelworxGateway;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -114,11 +115,59 @@ class PaymentController extends Controller
         ]);
     }
 
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $payments = Payment::with(['user', 'subscription.group'])
-            ->orderByDesc('created_at')
-            ->get();
+        $data = $request->validate([
+            'page' => ['sometimes', 'integer', 'min:1'],
+            'per_page' => ['sometimes', 'integer', 'in:10,25,50'],
+            'status' => ['sometimes', 'string', 'in:pending,confirmed,failed'],
+            'period' => ['sometimes', 'string', 'in:today,7d,30d,all,custom'],
+            'from' => ['required_if:period,custom', 'nullable', 'date'],
+            'to' => ['required_if:period,custom', 'nullable', 'date', 'after_or_equal:from'],
+            'search' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'subscription_id' => ['sometimes', 'integer', 'min:1'],
+        ]);
+
+        $timezone = (string) config('app.timezone', 'Africa/Kampala');
+        $query = Payment::with(['user:id,username,phone', 'subscription.group']);
+
+        if (! empty($data['status'])) {
+            $query->where('status', $data['status']);
+        }
+        if (! empty($data['subscription_id'])) {
+            $query->where('subscription_id', $data['subscription_id']);
+        }
+
+        $period = $data['period'] ?? 'all';
+        $now = Carbon::now($timezone);
+        if ($period === 'today') {
+            $query->where('created_at', '>=', $now->copy()->startOfDay());
+        } elseif ($period === '7d') {
+            $query->where('created_at', '>=', $now->copy()->subDays(6)->startOfDay());
+        } elseif ($period === '30d') {
+            $query->where('created_at', '>=', $now->copy()->subDays(29)->startOfDay());
+        } elseif ($period === 'custom') {
+            $query->where('created_at', '>=', Carbon::parse($data['from'], $timezone)->startOfDay())
+                ->where('created_at', '<', Carbon::parse($data['to'], $timezone)->addDay()->startOfDay());
+        }
+
+        $search = trim((string) ($data['search'] ?? ''));
+        if ($search !== '') {
+            $operator = DB::getDriverName() === 'pgsql' ? 'ilike' : 'like';
+            $query->where(function ($matches) use ($search, $operator) {
+                $matches->where('payment_reference', $operator, "%{$search}%")
+                    ->orWhere('transaction_id', $operator, "%{$search}%")
+                    ->orWhere('phone', $operator, "%{$search}%")
+                    ->orWhereHas('user', function ($user) use ($search, $operator) {
+                        $user->where('username', $operator, "%{$search}%")
+                            ->orWhere('phone', $operator, "%{$search}%");
+                    });
+            });
+        }
+
+        $payments = $query->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->paginate((int) ($data['per_page'] ?? 10));
 
         return response()->json($payments);
     }

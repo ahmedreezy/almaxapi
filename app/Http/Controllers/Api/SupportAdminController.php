@@ -25,6 +25,8 @@ class SupportAdminController extends Controller
             'priority' => ['sometimes', 'string', 'in:low,normal,high,urgent'],
             'search' => ['sometimes', 'string', 'max:100'],
             'perPage' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'per_page' => ['sometimes', 'integer', 'in:10,25,50'],
+            'page' => ['sometimes', 'integer', 'min:1'],
         ]);
 
         $query = SupportConversation::with(['contact.user', 'assignedAdmin'])
@@ -47,7 +49,7 @@ class SupportAdminController extends Controller
             });
         }
 
-        return response()->json($query->paginate($data['perPage'] ?? 30));
+        return response()->json($query->paginate($data['per_page'] ?? $data['perPage'] ?? 10));
     }
 
     public function show(SupportConversation $conversation): JsonResponse

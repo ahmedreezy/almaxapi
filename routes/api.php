@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\DeveloperAnalyticsController;
 use App\Http\Controllers\Api\FootballTipController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\OwnerAnalyticsController;
 use App\Http\Controllers\Api\PackageReleaseController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\PaymentGatewayController;
@@ -49,6 +50,10 @@ Route::get('/analytics/developer', [DeveloperAnalyticsController::class, 'index'
     ->middleware('auth.dev');
 Route::get('/analytics/developer/support-insights', [DeveloperAnalyticsController::class, 'supportInsights'])
     ->middleware('auth.dev');
+Route::get('/analytics/developer/payments', [DeveloperAnalyticsController::class, 'payments'])
+    ->middleware('auth.dev');
+Route::get('/analytics/developer/commission-transactions', [DeveloperAnalyticsController::class, 'commissionTransactions'])
+    ->middleware('auth.dev');
 Route::post('/analytics/developer/payments/{payment}/retry-commission', [DeveloperAnalyticsController::class, 'retryCommission'])
     ->middleware('auth.dev');
 
@@ -65,6 +70,9 @@ Route::prefix('developer')->middleware('auth.dev')->group(function () {
 });
 
 Route::prefix('admin')->middleware('auth.admin')->group(function () {
+    Route::get('/overview', [OwnerAnalyticsController::class, 'index']);
+    Route::get('/financial-report', [OwnerAnalyticsController::class, 'financialReport']);
+    Route::get('/financial-report/export', [OwnerAnalyticsController::class, 'exportFinancialReport']);
     Route::get('/wallet', [WalletController::class, 'adminShow']);
     Route::get('/payout-requests', [WalletController::class, 'adminIndex']);
     Route::post('/payout-requests', [WalletController::class, 'adminStore']);
