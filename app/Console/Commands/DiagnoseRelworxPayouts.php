@@ -30,6 +30,14 @@ class DiagnoseRelworxPayouts extends Command
             'provider_unknown' => 0,
             'reference_mismatch' => 0,
             'missing_provider_reference' => 0,
+            'within_48h_success' => 0,
+            'within_48h_failed' => 0,
+            'within_48h_pending' => 0,
+            'within_48h_unknown' => 0,
+            'older_success' => 0,
+            'older_failed' => 0,
+            'older_pending' => 0,
+            'older_unknown' => 0,
         ];
 
         $payouts = PayoutRequest::query()
@@ -58,6 +66,11 @@ class DiagnoseRelworxPayouts extends Command
                 default => 'provider_unknown',
             };
             $summary[$key]++;
+
+            $ageBucket = $payout->created_at && $payout->created_at->lt(now()->subHours(48))
+                ? 'older'
+                : 'within_48h';
+            $summary[$ageBucket.'_'.($status === 'success' || $status === 'failed' || $status === 'pending' ? $status : 'unknown')]++;
         }
 
         $json = json_encode($summary, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
