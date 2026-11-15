@@ -160,6 +160,38 @@ class PaymentGatewayTest extends TestCase
         Http::assertSent(fn ($request) => $request->data()['internal_reference'] === 'ALX-current-customer-reference');
     }
 
+    public function test_relworx_status_falls_back_to_internal_reference_after_unknown_customer_lookup(): void
+    {
+        $this->configureRelworx();
+        $payment = new Payment([
+            'payment_reference' => 'ALX-customer-reference',
+            'provider_request_id' => 'RWX-INTERNAL-123',
+        ]);
+        $payment->id = 100;
+
+        Http::fake(function ($request) {
+            if ($request->data()['internal_reference'] === 'ALX-customer-reference') {
+                return Http::response(['success' => false, 'message' => 'Request not found.'], 404);
+            }
+
+            return Http::response([
+                'success' => true,
+                'request_status' => 'success',
+                'customer_reference' => 'ALX-customer-reference',
+                'internal_reference' => 'RWX-INTERNAL-123',
+                'provider_transaction_id' => 'RWX-TXN-123',
+                'amount' => 1000,
+                'currency' => 'UGX',
+            ]);
+        });
+
+        $result = app(RelworxGateway::class)->queryCollection($payment);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('RWX-TXN-123', $result['transaction_id']);
+        Http::assertSentCount(2);
+    }
+
     public function test_relworx_reconciliation_recovers_a_recent_failed_payment(): void
     {
         $this->configureRelworx();

@@ -27,6 +27,8 @@ final class DeploymentEnvironmentValidator
         }
 
         [$repairedContents, $repairs] = self::repairSpacedHexSecrets($contents);
+        [$repairedContents, $webhookRepairs] = self::repairRelworxWebhookUrl($repairedContents);
+        $repairs = array_merge($repairs, $webhookRepairs);
 
         if ($repairs !== []) {
             if (! self::replaceWithBackup($path, $repairedContents)) {
@@ -34,11 +36,15 @@ final class DeploymentEnvironmentValidator
             }
 
             foreach ($repairs as $repair) {
-                printf(
-                    "[env] Repaired whitespace inside hexadecimal secret %s on line %d.\n",
-                    $repair['name'],
-                    $repair['line'],
-                );
+                if ($repair['name'] === 'RELWORX_WEBHOOK_URL') {
+                    printf("[env] Repaired redirecting Relworx webhook URL on line %d.\n", $repair['line']);
+                } else {
+                    printf(
+                        "[env] Repaired whitespace inside hexadecimal secret %s on line %d.\n",
+                        $repair['name'],
+                        $repair['line'],
+                    );
+                }
             }
 
             echo "[env] Original environment file saved as {$path}.backup.\n";
@@ -107,6 +113,44 @@ final class DeploymentEnvironmentValidator
 
             $lines[$index] = $matches[1].$compactValue.$matches[4].$carriageReturn;
             $repairs[] = ['name' => $matches[2], 'line' => $index + 1];
+        }
+
+        return [implode("\n", $lines), $repairs];
+    }
+
+    /**
+     * Relworx signs the exact configured callback URL. The live `www` host
+     * redirects before Laravel, so normalize only that known unsafe value.
+     *
+     * @return array{string, list<array{name: string, line: int}>}
+     */
+    public static function repairRelworxWebhookUrl(string $contents): array
+    {
+        $lines = explode("\n", $contents);
+        $repairs = [];
+        $redirecting = 'https://www.almaxpredictions.com/api/payments/webhooks/relworx';
+        $canonical = 'https://almaxpredictions.com/api/payments/webhooks/relworx';
+
+        foreach ($lines as $index => $line) {
+            if (! preg_match('/^(\s*(?:export\s+)?RELWORX_WEBHOOK_URL\s*=\s*)(\S+)(\s*)$/', $line, $matches)) {
+                continue;
+            }
+
+            $rawValue = $matches[2];
+            $quote = '';
+            if (strlen($rawValue) >= 2
+                && in_array($rawValue[0], ['"', "'"], true)
+                && $rawValue[-1] === $rawValue[0]) {
+                $quote = $rawValue[0];
+                $rawValue = substr($rawValue, 1, -1);
+            }
+
+            if (rtrim($rawValue, '/') !== $redirecting) {
+                continue;
+            }
+
+            $lines[$index] = $matches[1].$quote.$canonical.$quote.$matches[3];
+            $repairs[] = ['name' => 'RELWORX_WEBHOOK_URL', 'line' => $index + 1];
         }
 
         return [implode("\n", $lines), $repairs];

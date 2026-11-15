@@ -124,9 +124,23 @@ class RelworxGateway implements PaymentGateway
                     'raw' => $json,
                 ];
 
-                if ($referenceMatches) {
+                // A failed/unknown lookup often omits customer_reference. In that
+                // case the merchant reference alone must not short-circuit the
+                // provider internal-reference fallback.
+                if ($response->successful()
+                    && $referenceMatches
+                    && in_array($status, ['success', 'failed', 'pending'], true)) {
                     return $last;
                 }
+
+                Log::warning('Relworx collection status lookup was inconclusive.', [
+                    'payment_id' => $payment->id,
+                    'reference_type' => $reference === $payment->payment_reference ? 'customer' : 'provider',
+                    'http_status' => $response->status(),
+                    'provider_status' => $status,
+                    'reference_matches' => $referenceMatches,
+                    'message' => $json['message'] ?? null,
+                ]);
             } catch (\Throwable $e) {
                 Log::warning('Relworx collection status check failed.', [
                     'payment_id' => $payment->id,
@@ -202,9 +216,20 @@ class RelworxGateway implements PaymentGateway
                     'raw' => $json,
                 ];
 
-                if ($referenceMatches) {
+                if ($response->successful()
+                    && $referenceMatches
+                    && in_array($status, ['success', 'failed', 'pending'], true)) {
                     return $last;
                 }
+
+                Log::warning('Relworx payout status lookup was inconclusive.', [
+                    'payout_request_id' => $payout->id,
+                    'reference_type' => $reference === $payout->reference ? 'customer' : 'provider',
+                    'http_status' => $response->status(),
+                    'provider_status' => $status,
+                    'reference_matches' => $referenceMatches,
+                    'message' => $json['message'] ?? null,
+                ]);
             } catch (\Throwable $e) {
                 Log::warning('Relworx payout status check failed.', [
                     'payout_request_id' => $payout->id,

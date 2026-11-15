@@ -64,6 +64,20 @@ class DeploymentEnvironmentValidatorTest extends TestCase
     }
 
     #[Test]
+    public function it_repairs_the_redirecting_relworx_webhook_url(): void
+    {
+        [$contents, $repairs] = \DeploymentEnvironmentValidator::repairRelworxWebhookUrl(
+            "APP_ENV=production\nRELWORX_WEBHOOK_URL=\"https://www.almaxpredictions.com/api/payments/webhooks/relworx/\"\n",
+        );
+
+        $this->assertSame(
+            "APP_ENV=production\nRELWORX_WEBHOOK_URL=\"https://almaxpredictions.com/api/payments/webhooks/relworx\"\n",
+            $contents,
+        );
+        $this->assertSame([['name' => 'RELWORX_WEBHOOK_URL', 'line' => 2]], $repairs);
+    }
+
+    #[Test]
     public function it_reports_unquoted_whitespace_without_including_values(): void
     {
         $invalid = \DeploymentEnvironmentValidator::findUnquotedWhitespace(implode("\n", [

@@ -27,7 +27,7 @@ RELWORX_API_URL=https://payments.relworx.com/api
 RELWORX_API_KEY=copy-once-api-key
 RELWORX_ACCOUNT_NO=RELXXXXXXXXXX
 RELWORX_WEBHOOK_KEY=business-webhook-key
-RELWORX_WEBHOOK_URL=https://www.almaxpredictions.com/api/payments/webhooks/relworx
+RELWORX_WEBHOOK_URL=https://almaxpredictions.com/api/payments/webhooks/relworx
 RELWORX_WEBHOOK_TOLERANCE_SECONDS=300
 ```
 
@@ -40,7 +40,9 @@ Secrets are needed.
 1. Add the Relworx environment values while JPesa remains active.
 2. Deploy the API from `main`; the deployment runs the gateway migration and
    rebuilds Laravel's configuration cache.
-3. Configure the exact webhook URL and server IP in Relworx.
+3. Configure the exact non-redirecting webhook URL and server IP in Relworx.
+   Use `https://almaxpredictions.com/api/payments/webhooks/relworx` without
+   `www` and without a trailing slash. Relworx signs the exact configured URL.
 4. Deploy the frontend from its `main` branch.
 5. Open Developer Console → Payment Gateway and run **Test connection**.
 6. Switch to Relworx only after the check succeeds.

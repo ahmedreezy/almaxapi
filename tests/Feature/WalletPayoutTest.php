@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AdminUser;
 use App\Models\Payment;
+use App\Models\PayoutRequest;
 use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Payments\AgentCommissionService;
@@ -345,6 +346,40 @@ class WalletPayoutTest extends TestCase
         ]);
         $this->assertSame(3485.0, (float) $this->withHeaders($this->createAdmin('completed-wallet-reader')['headers'])
             ->getJson('/api/admin/wallet')->json('wallet.available'));
+    }
+
+    public function test_relworx_payout_status_falls_back_to_internal_reference_after_unknown_customer_lookup(): void
+    {
+        $this->enableImmediateRelworxPayouts();
+        $payout = new PayoutRequest([
+            'reference' => 'ALX-PAY-CUSTOMER',
+            'provider_request_id' => 'RWX-PAY-INTERNAL',
+            'amount' => 500,
+            'currency' => 'UGX',
+        ]);
+        $payout->id = 88;
+
+        Http::fake(function ($request) {
+            if ($request->data()['internal_reference'] === 'ALX-PAY-CUSTOMER') {
+                return Http::response(['success' => false, 'message' => 'Request not found.'], 404);
+            }
+
+            return Http::response([
+                'success' => true,
+                'request_status' => 'success',
+                'customer_reference' => 'ALX-PAY-CUSTOMER',
+                'internal_reference' => 'RWX-PAY-INTERNAL',
+                'provider_transaction_id' => 'RWX-PAY-TXN',
+                'amount' => 500,
+                'currency' => 'UGX',
+            ]);
+        });
+
+        $result = app(RelworxGateway::class)->queryPayout($payout);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('RWX-PAY-TXN', $result['transaction_id']);
+        Http::assertSentCount(2);
     }
 
     public function test_relworx_minimum_payout_is_enforced(): void
