@@ -4,6 +4,7 @@ namespace App\Services\Payments;
 
 use App\Models\PayoutRequest;
 use App\Models\WalletLedgerEntry;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -116,7 +117,7 @@ class PayoutExecutionService
                     'transaction_id' => $transactionId ?: $payout->transaction_id,
                     'provider_fee_actual' => $fee ?? $payout->provider_fee_actual,
                     'failure_reason' => null,
-                    'completed_at' => $providerData['completed_at'] ?? now(),
+                    'completed_at' => $this->completionTime($providerData['completed_at'] ?? null) ?? now(),
                 ]);
 
                 return $payout->fresh();
@@ -139,11 +140,24 @@ class PayoutExecutionService
                     'provider_request_id' => $providerRequestId ?: $payout->provider_request_id,
                     'transaction_id' => $transactionId ?: $payout->transaction_id,
                     'failure_reason' => substr((string) ($providerData['message'] ?? 'Relworx payout failed.'), 0, 1000),
-                    'completed_at' => $providerData['completed_at'] ?? now(),
+                    'completed_at' => $this->completionTime($providerData['completed_at'] ?? null) ?? now(),
                 ]);
             }
 
             return $payout->fresh();
         }, 3);
+    }
+
+    private function completionTime(mixed $value): ?Carbon
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

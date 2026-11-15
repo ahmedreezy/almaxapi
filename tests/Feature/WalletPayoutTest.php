@@ -418,6 +418,7 @@ class WalletPayoutTest extends TestCase
             'amount' => 500,
             'currency' => 'UGX',
             'message' => 'Payout rejected by the mobile network.',
+            'completed_at' => 'N/A',
         ])]);
 
         $this->artisan('payouts:reconcile-relworx')->assertSuccessful();
