@@ -85,6 +85,13 @@ class ConfigTest extends TestCase
             ->assertJsonStructure(['odds_2_daily_price']);
     }
 
+    public function test_public_vip_config_includes_the_new_whatsapp_channel(): void
+    {
+        $this->getJson('/api/config/vip-config')
+            ->assertOk()
+            ->assertJsonPath('whatsapp_link', 'https://whatsapp.com/channel/0029VbDlmLz9Bb5xVZ7OJz0O');
+    }
+
     // vip-config PUT expects {key, value} (single key/value pair per request)
     public function test_admin_can_update_whitelisted_vip_config_key(): void
     {
